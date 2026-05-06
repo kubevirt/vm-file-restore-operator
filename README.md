@@ -72,7 +72,7 @@ The `VirtualMachineFileRestore` CRD allows you to specify:
 #### Restore from PVC
 
 ```yaml
-apiVersion: restore.kubevirt.io/v1alpha1
+apiVersion: filerestore.kubevirt.io/v1alpha1
 kind: VirtualMachineFileRestore
 metadata:
   name: restore-from-pvc
@@ -90,7 +90,7 @@ spec:
 #### Restore from VolumeSnapshot
 
 ```yaml
-apiVersion: restore.kubevirt.io/v1alpha1
+apiVersion: filerestore.kubevirt.io/v1alpha1
 kind: VirtualMachineFileRestore
 metadata:
   name: restore-from-snapshot
@@ -109,7 +109,7 @@ spec:
 #### Restore from Remote Storage (S3 via rclone)
 
 ```yaml
-apiVersion: restore.kubevirt.io/v1alpha1
+apiVersion: filerestore.kubevirt.io/v1alpha1
 kind: VirtualMachineFileRestore
 metadata:
   name: restore-from-remote
