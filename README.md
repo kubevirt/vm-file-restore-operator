@@ -24,7 +24,7 @@ This operator simplifies disaster recovery and file-level backup scenarios for v
 **Build and push your image to the location specified by `IMG`:**
 
 ```sh
-make docker-build docker-push IMG=<some-registry>/file-restore-operator:tag
+make docker-build docker-push IMG=<some-registry>/vm-file-restore-operator:tag
 ```
 
 **NOTE:** This image ought to be published in the personal registry you specified.
@@ -40,7 +40,7 @@ make install
 **Deploy the Manager to the cluster with the image specified by `IMG`:**
 
 ```sh
-make deploy IMG=<some-registry>/file-restore-operator:tag
+make deploy IMG=<some-registry>/vm-file-restore-operator:tag
 ```
 
 > **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
@@ -61,11 +61,11 @@ kubectl apply -k config/samples/
 
 The `VirtualMachineFileRestore` CRD allows you to specify:
 
-- **virtualMachineName**: Target VM to restore files into
-- **source**: One of PVC, VolumeSnapshot, or RemoteBackup
-- **files**: List of specific file paths to restore
-- **directories**: List of directories to restore recursively
-- **targetVolume**: (Optional) Specific volume in the VM to restore to
+- **target**: TypedLocalObjectReference to the target VirtualMachine
+- **source**: One of PVC, VolumeSnapshot, or Remote (rclone-based)
+- **sourcePath**: Path within the source to restore (omit for manual restore mode)
+- **targetPath**: (Optional) Destination path in the target VM
+- **sourcePartition**: (Optional) Partition number in the source volume
 
 ### Examples
 
@@ -77,15 +77,14 @@ kind: VirtualMachineFileRestore
 metadata:
   name: restore-from-pvc
 spec:
-  virtualMachineName: my-vm
+  target:
+    apiGroup: kubevirt.io
+    kind: VirtualMachine
+    name: fedora
   source:
-    persistentVolumeClaim:
-      name: backup-pvc
-      namespace: default
-  files:
-    - /etc/important-config.conf
-  directories:
-    - /var/lib/data
+    pvc:
+      name: filebackup1
+  sourcePath: /home/donald
 ```
 
 #### Restore from VolumeSnapshot
@@ -96,16 +95,18 @@ kind: VirtualMachineFileRestore
 metadata:
   name: restore-from-snapshot
 spec:
-  virtualMachineName: my-vm
+  target:
+    apiGroup: kubevirt.io
+    kind: VirtualMachine
+    name: fedora
   source:
-    volumeSnapshot:
-      name: vm-snapshot-20260415
-  files:
-    - /etc/database/db.conf
-  targetVolume: data-volume
+    snapshot:
+      name: snap1
+  sourcePath: /etc/database
+  targetPath: /opt/restored-config
 ```
 
-#### Restore from Remote Backup
+#### Restore from Remote Storage (S3 via rclone)
 
 ```yaml
 apiVersion: restore.kubevirt.io/v1alpha1
@@ -113,14 +114,15 @@ kind: VirtualMachineFileRestore
 metadata:
   name: restore-from-remote
 spec:
-  virtualMachineName: my-vm
+  target:
+    apiGroup: kubevirt.io
+    kind: VirtualMachine
+    name: fedora
   source:
-    remoteBackup:
-      url: s3://my-bucket/backups/vm-backup.tar.gz
-      secretRef:
-        name: s3-credentials
-  directories:
-    - /opt/application/data
+    remote:
+      name: s3_backup  # rclone remote name
+      bucket: buck1
+  sourcePath: /backups/application-data
 ```
 
 ### Check Restore Status
@@ -160,7 +162,7 @@ Following the options to release and provide this solution to the users.
 1. Build the installer for the image built and published in the registry:
 
 ```sh
-make build-installer IMG=<some-registry>/file-restore-operator:tag
+make build-installer IMG=<some-registry>/vm-file-restore-operator:tag
 ```
 
 **NOTE:** The makefile target mentioned above generates an 'install.yaml'
@@ -174,7 +176,7 @@ Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
 the project, i.e.:
 
 ```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/file-restore-operator/<tag or branch>/dist/install.yaml
+kubectl apply -f https://raw.githubusercontent.com/<org>/vm-file-restore-operator/<tag or branch>/dist/install.yaml
 ```
 
 ### By providing a Helm Chart
