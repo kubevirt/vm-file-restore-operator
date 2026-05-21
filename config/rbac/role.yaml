@@ -7,6 +7,16 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  - secrets
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - events
   verbs:
   - create
@@ -15,7 +25,6 @@ rules:
   - ""
   resources:
   - persistentvolumeclaims
-  - secrets
   verbs:
   - get
   - list
@@ -59,10 +68,20 @@ rules:
 - apiGroups:
   - kubevirt.io
   resources:
+  - virtualmachineinstances
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - kubevirt.io
+  resources:
   - virtualmachines
   verbs:
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - snapshot.storage.k8s.io

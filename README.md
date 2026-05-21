@@ -55,6 +55,61 @@ kubectl apply -k config/samples/
 
 >**NOTE**: Ensure that the samples has default values to test it out.
 
+## SSH Setup for File Restore
+
+The operator requires SSH access to VMs to execute restore operations. Follow these steps:
+
+### 1. Get the Operator's SSH Public Key
+
+After deploying the operator, retrieve the public key:
+
+```bash
+kubectl get configmap vm-file-restore-operator-ssh \
+  -n vm-file-restore-operator-system \
+  -o jsonpath='{.data.ssh-publickey}'
+```
+
+### 2. Add Public Key to Your VMs
+
+Add the public key to `~/.ssh/authorized_keys` in each VM where you want to perform restores:
+
+**For Linux VMs:**
+```bash
+# SSH into your VM
+ssh user@vm-ip
+
+# Add the operator's public key
+echo "ssh-ed25519 AAAA...xyz vm-file-restore-operator" >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+```
+
+**For Windows VMs:**
+Add the key to `C:\ProgramData\ssh\administrators_authorized_keys` or the user's `.ssh\authorized_keys`.
+
+### 3. Install Helper Scripts in VMs
+
+The operator requires helper scripts installed in VMs:
+
+**Linux:** `/usr/local/bin/filerestore.sh`  
+**Windows:** `C:\Program Files\filerestore\filerestore.bat`
+
+See `docs/` for helper script installation instructions.
+
+### 4. Create a Restore
+
+Once SSH is configured and helpers are installed, create a restore:
+
+```bash
+kubectl apply -f config/samples/restore_v1alpha1_virtualmachinefilerestore.yaml
+```
+
+Monitor progress:
+
+```bash
+kubectl get vmfr -w
+kubectl describe vmfr <restore-name>
+```
+
 ## Usage
 
 ### VirtualMachineFileRestore API

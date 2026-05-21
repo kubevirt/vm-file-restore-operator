@@ -20,29 +20,41 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
+	v1 "kubevirt.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 )
 
+const (
+	finalizerName = "filerestore.kubevirt.io/cleanup"
+)
+
 // VirtualMachineFileRestoreReconciler reconciles a VirtualMachineFileRestore object
 type VirtualMachineFileRestoreReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme            *runtime.Scheme
+	Recorder          record.EventRecorder
+	OperatorNamespace string
 }
 
 // +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=virtualmachinefilerestores,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=virtualmachinefilerestores/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=virtualmachinefilerestores/finalizers,verbs=update
-// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachineinstances,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshots,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
 
@@ -67,6 +79,38 @@ func (r *VirtualMachineFileRestoreReconciler) Reconcile(ctx context.Context, req
 		"namespace", vmFileRestore.Namespace,
 		"phase", vmFileRestore.Status.Phase)
 
+	// Handle deletion
+	if !vmFileRestore.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(vmFileRestore, finalizerName) {
+			logger.Info("VirtualMachineFileRestore is being deleted, running cleanup")
+
+			// Run cleanup (best-effort, continue to remove finalizer even on error)
+			if err := r.cleanup(ctx, vmFileRestore); err != nil {
+				logger.Error(err, "Error during cleanup, continuing to remove finalizer")
+			}
+
+			// Remove finalizer
+			controllerutil.RemoveFinalizer(vmFileRestore, finalizerName)
+			if err := r.Update(ctx, vmFileRestore); err != nil {
+				logger.Error(err, "Failed to remove finalizer")
+				return ctrl.Result{}, err
+			}
+			logger.Info("Finalizer removed, deletion will proceed")
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(vmFileRestore, finalizerName) {
+		logger.Info("Adding finalizer")
+		controllerutil.AddFinalizer(vmFileRestore, finalizerName)
+		if err := r.Update(ctx, vmFileRestore); err != nil {
+			logger.Error(err, "Failed to add finalizer")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	// If already completed or failed, nothing to do
 	if vmFileRestore.Status.Phase == restorev1alpha1.RestorePhaseSucceeded ||
 		vmFileRestore.Status.Phase == restorev1alpha1.RestorePhaseFailed {
@@ -74,122 +118,72 @@ func (r *VirtualMachineFileRestoreReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, nil
 	}
 
-	// Validate the restore source
-	if err := r.validateRestoreSource(vmFileRestore); err != nil {
-		logger.Error(err, "Invalid restore source")
-		return r.updateStatus(ctx, vmFileRestore, restorev1alpha1.RestorePhaseFailed, err.Error(), 0)
+	// Run phase handler
+	handler := getPhaseHandler(vmFileRestore.Status.Phase)
+	if handler == nil {
+		logger.Error(fmt.Errorf("unknown phase"), "No handler for phase", "phase", vmFileRestore.Status.Phase)
+		return ctrl.Result{}, nil
 	}
 
-	// Initialize status if this is a new restore
-	if vmFileRestore.Status.Phase == "" {
-		logger.Info("Initializing new restore")
-		now := metav1.Now()
-		vmFileRestore.Status.StartTime = &now
-		vmFileRestore.Status.Phase = restorev1alpha1.RestorePhaseNew
-		if err := r.Status().Update(ctx, vmFileRestore); err != nil {
-			logger.Error(err, "Failed to update status to New")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{Requeue: true}, nil
-	}
-
-	// Move to Init if currently New
-	if vmFileRestore.Status.Phase == restorev1alpha1.RestorePhaseNew {
-		logger.Info("Starting restore operation")
-		vmFileRestore.Status.Phase = restorev1alpha1.RestorePhaseInit
-		if err := r.Status().Update(ctx, vmFileRestore); err != nil {
-			logger.Error(err, "Failed to update status to Init")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{Requeue: true}, nil
-	}
-
-	// Perform the actual restore operation
-	// NOTE: This is a minimal implementation. A real implementation would:
-	// 1. Create a restore pod to mount both source and target volumes
-	// 2. Hotplug the backup volume (read-only) to the target VM
-	// 3. SSH into the guest and run the file restore helper
-	// 4. Handle different source types (PVC, VolumeSnapshot, Remote)
-	// 5. For manual restore mode (no sourcePath), just mount and wait for user
-	logger.Info("Executing file restore operation",
-		"target", vmFileRestore.Spec.Target.Name,
-		"sourcePath", vmFileRestore.Spec.SourcePath)
-
-	// Simulate restore completion
-	// In manual mode (no sourcePath), fileCount would be 0
-	fileCount := int32(1) // Placeholder for actual restore count
-	return r.updateStatus(ctx, vmFileRestore, restorev1alpha1.RestorePhaseSucceeded, "", fileCount)
+	return handler(ctx, r, vmFileRestore)
 }
 
-// validateRestoreSource ensures exactly one source type is specified
-func (r *VirtualMachineFileRestoreReconciler) validateRestoreSource(vmfr *restorev1alpha1.VirtualMachineFileRestore) error {
-	sourceCount := 0
-	if vmfr.Spec.Source.PVC != nil {
-		sourceCount++
-	}
-	if vmfr.Spec.Source.Snapshot != nil {
-		sourceCount++
-	}
-	if vmfr.Spec.Source.Remote != nil {
-		sourceCount++
+// cleanup performs cleanup when CR is deleted
+func (r *VirtualMachineFileRestoreReconciler) cleanup(ctx context.Context, vmfr *restorev1alpha1.VirtualMachineFileRestore) error {
+	logger := log.FromContext(ctx)
+	logger.Info("Running cleanup", "name", vmfr.Name)
+
+	// Best effort cleanup - don't fail on errors
+
+	// Get VMI if exists
+	vmi := &v1.VirtualMachineInstance{}
+	err := r.Get(ctx, client.ObjectKey{
+		Name:      vmfr.Spec.Target.Name,
+		Namespace: vmfr.Namespace,
+	}, vmi)
+
+	if err == nil {
+		// Run SSH cleanup
+		osType, _ := DetectGuestOS(vmi)
+		ip, err := GetVMIPAddress(ctx, r.Client, vmi)
+		if err == nil {
+			operatorNamespace := r.getOperatorNamespace()
+			secret := &corev1.Secret{}
+			err = r.Get(ctx, client.ObjectKey{
+				Name:      SSHKeypairSecretName,
+				Namespace: operatorNamespace,
+			}, secret)
+			if err == nil {
+				privateKey := secret.Data[corev1.SSHAuthPrivateKey]
+				sshClient, err := ConnectSSH(ip, privateKey)
+				if err == nil {
+					defer sshClient.Close()
+					cleanupCmd := BuildCleanupCommand(osType, vmfr.Status.MountPath)
+					_, _, _ = sshClient.RunCommand(ctx, cleanupCmd)
+				}
+			}
+		}
 	}
 
-	if sourceCount == 0 {
-		return fmt.Errorf("no restore source specified")
-	}
-	if sourceCount > 1 {
-		return fmt.Errorf("multiple restore sources specified, only one is allowed")
+	// Unplug volume
+	vm := &v1.VirtualMachine{}
+	err = r.Get(ctx, client.ObjectKey{
+		Name:      vmfr.Spec.Target.Name,
+		Namespace: vmfr.Namespace,
+	}, vm)
+	if err == nil {
+		_ = UnplugVolume(ctx, r.Client, vmfr, vm)
 	}
 
 	return nil
 }
 
-// updateStatus updates the VirtualMachineFileRestore status
-func (r *VirtualMachineFileRestoreReconciler) updateStatus(
-	ctx context.Context,
-	vmfr *restorev1alpha1.VirtualMachineFileRestore,
-	phase restorev1alpha1.RestorePhase,
-	errorMsg string,
-	fileCount int32,
-) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
-	vmfr.Status.Phase = phase
-	vmfr.Status.ErrorMessage = errorMsg
-	vmfr.Status.RestoredFilesCount = fileCount
-
-	if phase == restorev1alpha1.RestorePhaseSucceeded || phase == restorev1alpha1.RestorePhaseFailed {
-		now := metav1.Now()
-		vmfr.Status.CompletionTime = &now
+// getOperatorNamespace returns the namespace where the operator is running.
+func (r *VirtualMachineFileRestoreReconciler) getOperatorNamespace() string {
+	if r.OperatorNamespace != "" {
+		return r.OperatorNamespace
 	}
-
-	// Update conditions
-	condition := metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: vmfr.Generation,
-		LastTransitionTime: metav1.Now(),
-		Reason:             string(phase),
-		Message:            fmt.Sprintf("Restore is in %s phase", phase),
-	}
-
-	switch phase {
-	case restorev1alpha1.RestorePhaseSucceeded:
-		condition.Status = metav1.ConditionTrue
-		condition.Message = fmt.Sprintf("Successfully restored %d file(s)", fileCount)
-	case restorev1alpha1.RestorePhaseFailed:
-		condition.Message = errorMsg
-	}
-
-	// Add or update the condition
-	setCondition(&vmfr.Status.Conditions, condition)
-
-	if err := r.Status().Update(ctx, vmfr); err != nil {
-		logger.Error(err, "Failed to update VirtualMachineFileRestore status")
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
+	return "vm-file-restore-operator-system"
 }
 
 // setCondition adds or updates a condition in the condition list
@@ -209,6 +203,8 @@ func setCondition(conditions *[]metav1.Condition, newCondition metav1.Condition)
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *VirtualMachineFileRestoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.Recorder = mgr.GetEventRecorderFor("virtualmachinefilerestore-controller")
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&restorev1alpha1.VirtualMachineFileRestore{}).
 		Named("virtualmachinefilerestore").

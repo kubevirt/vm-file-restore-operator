@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
@@ -202,9 +203,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Generate SSH keypair on startup
+	operatorNamespace := os.Getenv("OPERATOR_NAMESPACE")
+	if operatorNamespace == "" {
+		operatorNamespace = "vm-file-restore-operator-system"
+	}
+
+	setupLog.Info("Ensuring SSH keypair exists", "namespace", operatorNamespace)
+	if err := controller.EnsureSSHKeypair(context.Background(), mgr.GetClient(), operatorNamespace); err != nil {
+		setupLog.Error(err, "Failed to ensure SSH keypair")
+		os.Exit(1)
+	}
+	setupLog.Info("SSH keypair ready")
+
 	if err := (&controller.VirtualMachineFileRestoreReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: operatorNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "VirtualMachineFileRestore")
 		os.Exit(1)
