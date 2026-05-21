@@ -3,8 +3,8 @@ package controller
 import (
 	"testing"
 
-	v1 "kubevirt.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1 "kubevirt.io/api/core/v1"
 )
 
 func TestDetectGuestOS_FromAnnotation_Windows(t *testing.T) {

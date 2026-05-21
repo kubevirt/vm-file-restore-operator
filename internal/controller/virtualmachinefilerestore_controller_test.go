@@ -123,11 +123,12 @@ var _ = Describe("VirtualMachineFileRestore Controller", func() {
 			Expect(resource.Finalizers).To(BeEmpty())
 
 			By("reconciling the resource")
-			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+			// May fail in Init phase (missing VM), but finalizer should be added first
+			// We intentionally don't check the error - reconcile happens in background
+			_, _ = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 
-			// May fail in Init phase, but finalizer should be added first
 			By("verifying finalizer was added")
 			err = k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())

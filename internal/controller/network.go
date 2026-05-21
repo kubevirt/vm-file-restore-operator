@@ -47,9 +47,12 @@ func GetVMIPAddress(ctx context.Context, c client.Client, vmi *v1.VirtualMachine
 
 // getPodForVMI finds the virt-launcher pod for a VMI.
 func getPodForVMI(ctx context.Context, c client.Client, vmi *v1.VirtualMachineInstance) (*corev1.Pod, error) {
+	// List pods with virt-launcher label to reduce API load
 	podList := &corev1.PodList{}
-	// Issue 4: List all pods in namespace, filter by OwnerReference only
-	err := c.List(ctx, podList, client.InNamespace(vmi.Namespace))
+	err := c.List(ctx, podList,
+		client.InNamespace(vmi.Namespace),
+		client.MatchingLabels{"kubevirt.io/domain": vmi.Name},
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list pods for VMI %s/%s: %w", vmi.Namespace, vmi.Name, err)
 	}

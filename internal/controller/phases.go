@@ -66,6 +66,10 @@ func transitionPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler
 	logger := log.FromContext(ctx)
 
 	oldPhase := vmfr.Status.Phase
+
+	// Create a copy for status update to avoid modifying in-memory object on failure
+	patch := client.MergeFrom(vmfr.DeepCopy())
+
 	vmfr.Status.Phase = newPhase
 
 	// Set StartTime if transitioning from New
@@ -80,8 +84,8 @@ func transitionPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler
 		vmfr.Status.CompletionTime = &now
 	}
 
-	// Update status
-	if err := r.Status().Update(ctx, vmfr); err != nil {
+	// Use Status().Patch instead of Update for better conflict handling
+	if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
 		logger.Error(err, "Failed to update status during phase transition",
 			"oldPhase", oldPhase,
 			"newPhase", newPhase)
@@ -104,9 +108,49 @@ func transitionPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler
 	return ctrl.Result{Requeue: true}, nil
 }
 
+// incrementRetryAndRequeue increments a retry counter and requeues with exponential backoff.
+// retryType should be "attachment" or "ssh".
+func incrementRetryAndRequeue(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vmfr *restorev1alpha1.VirtualMachineFileRestore, retryType string, baseDelay time.Duration) (ctrl.Result, error) {
+	patch := client.MergeFrom(vmfr.DeepCopy())
+
+	if retryType == "attachment" {
+		vmfr.Status.AttachmentRetries++
+	} else if retryType == "ssh" {
+		vmfr.Status.SSHRetries++
+	}
+
+	if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to increment %s retry counter: %w", retryType, err)
+	}
+
+	// Use exponential backoff with cap (issue #21)
+	delay := baseDelay
+	var retries int32
+	if retryType == "attachment" {
+		retries = vmfr.Status.AttachmentRetries
+	} else {
+		retries = vmfr.Status.SSHRetries
+	}
+
+	// Double delay every 5 retries, capped at 30 seconds
+	if retries >= 5 && retries < 10 {
+		delay = baseDelay * 2
+	} else if retries >= 10 {
+		delay = baseDelay * 4
+	}
+	if delay > 30*time.Second {
+		delay = 30 * time.Second
+	}
+
+	return ctrl.Result{RequeueAfter: delay}, nil
+}
+
 // failRestore transitions the restore to Failed phase with error details.
 func failRestore(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vmfr *restorev1alpha1.VirtualMachineFileRestore, err error, detail string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+
+	// Create a copy for status update to avoid modifying in-memory object on failure
+	patch := client.MergeFrom(vmfr.DeepCopy())
 
 	// Set Phase to Failed
 	vmfr.Status.Phase = restorev1alpha1.RestorePhaseFailed
@@ -129,8 +173,8 @@ func failRestore(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vm
 	}
 	setCondition(&vmfr.Status.Conditions, condition)
 
-	// Update status
-	if updateErr := r.Status().Update(ctx, vmfr); updateErr != nil {
+	// Use Status().Patch instead of Update for better conflict handling
+	if updateErr := r.Status().Patch(ctx, vmfr, patch); updateErr != nil {
 		logger.Error(updateErr, "Failed to update status during failure handling")
 		return ctrl.Result{}, updateErr
 	}
@@ -152,6 +196,24 @@ func failRestore(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vm
 // handleInitPhase validates the target VM and source, detects OS, and transitions to Hotplugging.
 func handleInitPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vmfr *restorev1alpha1.VirtualMachineFileRestore) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+
+	// Validate exactly one source is specified (issue #3)
+	sourceCount := 0
+	if vmfr.Spec.Source.PVC != nil {
+		sourceCount++
+	}
+	if vmfr.Spec.Source.Snapshot != nil {
+		sourceCount++
+	}
+	if vmfr.Spec.Source.Remote != nil {
+		sourceCount++
+	}
+	if sourceCount == 0 {
+		return failRestore(ctx, r, vmfr, fmt.Errorf("no source specified"), "must specify exactly one of pvc, snapshot, or remote")
+	}
+	if sourceCount > 1 {
+		return failRestore(ctx, r, vmfr, fmt.Errorf("multiple sources specified"), "must specify exactly one of pvc, snapshot, or remote")
+	}
 
 	// Get target VM
 	vm := &v1.VirtualMachine{}
@@ -185,6 +247,7 @@ func handleInitPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler
 		pvcNamespace := vmfr.Spec.Source.PVC.Namespace
 		if pvcNamespace == "" {
 			pvcNamespace = vmfr.Namespace
+			logger.Info("PVC namespace not specified, using CR namespace", "namespace", pvcNamespace)
 		}
 		pvcKey := client.ObjectKey{
 			Name:      vmfr.Spec.Source.PVC.Name,
@@ -222,9 +285,10 @@ func handleInitPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler
 	osType, mountPath := DetectGuestOS(vmi)
 	logger.Info("Detected guest OS", "osType", osType, "mountPath", mountPath)
 
-	// Set mount path in status
+	// Set mount path in status using Patch for consistency (issue #1)
+	patch := client.MergeFrom(vmfr.DeepCopy())
 	vmfr.Status.MountPath = mountPath
-	if err := r.Status().Update(ctx, vmfr); err != nil {
+	if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
 		logger.Error(err, "Failed to update status with mount path")
 		return ctrl.Result{}, err
 	}
@@ -249,6 +313,11 @@ func handleHotpluggingPhase(ctx context.Context, r *VirtualMachineFileRestoreRec
 
 	// Hotplug the volume
 	if err := HotplugVolume(ctx, r.Client, vmfr, vm); err != nil {
+		// Issue #5: Handle transient errors by requeuing instead of failing
+		if IsTransient(err) {
+			logger.Info("Hotplug encountered transient condition, will retry", "error", err)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
 		return failRestore(ctx, r, vmfr, err, "failed to hotplug volume to VM")
 	}
 
@@ -264,6 +333,14 @@ func handleHotpluggingPhase(ctx context.Context, r *VirtualMachineFileRestoreRec
 // handleWaitingForAttachmentPhase waits for the volume to be attached and bound to the VMI.
 func handleWaitingForAttachmentPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vmfr *restorev1alpha1.VirtualMachineFileRestore) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+
+	// Check timeout (issue #6): max 5 minutes (60 retries * 5 seconds)
+	const maxAttachmentWait = 60
+	if vmfr.Status.AttachmentRetries >= maxAttachmentWait {
+		return failRestore(ctx, r, vmfr,
+			fmt.Errorf("volume attachment timeout"),
+			fmt.Sprintf("volume did not attach after %d attempts (5 minutes)", maxAttachmentWait))
+	}
 
 	// Get VMI
 	vmi := &v1.VirtualMachineInstance{}
@@ -285,25 +362,34 @@ func handleWaitingForAttachmentPhase(ctx context.Context, r *VirtualMachineFileR
 		}
 	}
 
-	// If volume not found in status, requeue
+	// If volume not found in status, increment retry and requeue
 	if volumeStatus == nil {
-		logger.Info("Volume not yet in VMI status, requeuing", "volumeName", volumeName)
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		logger.Info("Volume not yet in VMI status, requeuing", "volumeName", volumeName, "attempt", vmfr.Status.AttachmentRetries+1)
+		return incrementRetryAndRequeue(ctx, r, vmfr, "attachment", 5*time.Second)
 	}
 
-	// If volume not bound, requeue
+	// If volume not bound, increment retry and requeue
 	if volumeStatus.Phase != v1.VolumeReady {
-		logger.Info("Volume not yet bound", "volumeName", volumeName, "phase", volumeStatus.Phase)
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		logger.Info("Volume not yet bound", "volumeName", volumeName, "phase", volumeStatus.Phase, "attempt", vmfr.Status.AttachmentRetries+1)
+		return incrementRetryAndRequeue(ctx, r, vmfr, "attachment", 5*time.Second)
 	}
 
-	// If volume bound but no target, requeue
+	// If volume bound but no target, increment retry and requeue
 	if volumeStatus.Target == "" {
-		logger.Info("Volume bound but target not set", "volumeName", volumeName)
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		logger.Info("Volume bound but target not set", "volumeName", volumeName, "attempt", vmfr.Status.AttachmentRetries+1)
+		return incrementRetryAndRequeue(ctx, r, vmfr, "attachment", 5*time.Second)
 	}
 
 	logger.Info("Volume attached and bound", "volumeName", volumeName, "target", volumeStatus.Target)
+
+	// Reset retry counter
+	if vmfr.Status.AttachmentRetries > 0 {
+		patch := client.MergeFrom(vmfr.DeepCopy())
+		vmfr.Status.AttachmentRetries = 0
+		if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
+			logger.Error(err, "Failed to reset attachment retry counter")
+		}
+	}
 
 	// Transition to SSHConnecting
 	return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseSSHConnecting, "Volume attached, establishing SSH connection")
@@ -312,6 +398,14 @@ func handleWaitingForAttachmentPhase(ctx context.Context, r *VirtualMachineFileR
 // handleSSHConnectingPhase establishes SSH connection and determines next phase.
 func handleSSHConnectingPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vmfr *restorev1alpha1.VirtualMachineFileRestore) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+
+	// Check timeout (issue #7): max 2 minutes (24 retries * 5 seconds)
+	const maxSSHWait = 24
+	if vmfr.Status.SSHRetries >= maxSSHWait {
+		return failRestore(ctx, r, vmfr,
+			fmt.Errorf("SSH connection timeout"),
+			fmt.Sprintf("SSH connection failed after %d attempts (2 minutes)", maxSSHWait))
+	}
 
 	// Get VMI
 	vmi := &v1.VirtualMachineInstance{}
@@ -323,7 +417,7 @@ func handleSSHConnectingPhase(ctx context.Context, r *VirtualMachineFileRestoreR
 		return failRestore(ctx, r, vmfr, err, "failed to get VMI")
 	}
 
-	// Get IP address
+	// Get IP address (issue #18: log which IP is selected)
 	ip, err := GetVMIPAddress(ctx, r.Client, vmi)
 	if err != nil {
 		return failRestore(ctx, r, vmfr, err, "failed to get VM IP address")
@@ -346,14 +440,24 @@ func handleSSHConnectingPhase(ctx context.Context, r *VirtualMachineFileRestoreR
 		return failRestore(ctx, r, vmfr, fmt.Errorf("private key not found in secret"), "SSH private key missing from secret")
 	}
 
-	// Connect SSH
+	// Connect SSH with retry (issue #7)
 	sshClient, err := ConnectSSH(ip, privateKey)
 	if err != nil {
-		return failRestore(ctx, r, vmfr, err, fmt.Sprintf("failed to establish SSH connection to %s", ip))
+		logger.Info("SSH connection failed, will retry", "ip", ip, "error", err, "attempt", vmfr.Status.SSHRetries+1)
+		return incrementRetryAndRequeue(ctx, r, vmfr, "ssh", 5*time.Second)
 	}
 	defer sshClient.Close()
 
 	logger.Info("SSH connection established", "ip", ip)
+
+	// Reset SSH retry counter
+	if vmfr.Status.SSHRetries > 0 {
+		patch := client.MergeFrom(vmfr.DeepCopy())
+		vmfr.Status.SSHRetries = 0
+		if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
+			logger.Error(err, "Failed to reset SSH retry counter")
+		}
+	}
 
 	// Detect OS and mount path (already set in Init, but re-detect for safety)
 	osType, mountPath := DetectGuestOS(vmi)
@@ -429,31 +533,45 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 
 	logger.Info("Restore command completed", "stdout", stdout, "stderr", stderr)
 
-	// Parse output for file count
-	// Expected output format: "X files restored" or "Restored X files"
+	// Parse output for file count (issue #8: fix parsing, issue #20: parse multiple patterns)
+	// Expected output formats: "42 files restored", "Restored 42 files", "42 files"
 	fileCount := int32(0)
 	for _, line := range strings.Split(stdout, "\n") {
-		if strings.Contains(line, "files restored") || strings.Contains(line, "Restored") {
-			// Try to parse number from line
-			var count int32
-			if _, err := fmt.Sscanf(line, "%d", &count); err == nil {
-				fileCount = count
-				break
-			}
+		var count int32
+		// Try common patterns
+		if n, _ := fmt.Sscanf(line, "%d files restored", &count); n == 1 {
+			fileCount = count
+			break
 		}
-	}
-
-	// Set restored files count
-	vmfr.Status.RestoredFilesCount = fileCount
-	if err := r.Status().Update(ctx, vmfr); err != nil {
-		logger.Error(err, "Failed to update status with file count")
-		return ctrl.Result{}, err
+		if n, _ := fmt.Sscanf(line, "Restored %d files", &count); n == 1 {
+			fileCount = count
+			break
+		}
+		if n, _ := fmt.Sscanf(line, "%d files", &count); n == 1 {
+			fileCount = count
+			break
+		}
 	}
 
 	logger.Info("File restore completed", "filesRestored", fileCount)
 
-	// Transition to Cleanup
-	return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseCleanup, fmt.Sprintf("Restored %d files, cleaning up", fileCount))
+	// Update file count and transition phase atomically (issue #9)
+	patch := client.MergeFrom(vmfr.DeepCopy())
+	vmfr.Status.RestoredFilesCount = fileCount
+	vmfr.Status.Phase = restorev1alpha1.RestorePhaseCleanup
+
+	if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
+		logger.Error(err, "Failed to update status during phase transition to Cleanup")
+		return ctrl.Result{}, err
+	}
+
+	// Log transition and emit event
+	r.Recorder.Event(vmfr, corev1.EventTypeNormal, string(restorev1alpha1.RestorePhaseCleanup),
+		fmt.Sprintf("Restored %d files, cleaning up", fileCount))
+	logger.Info("Phase transition", "oldPhase", restorev1alpha1.RestorePhaseRestoring,
+		"newPhase", restorev1alpha1.RestorePhaseCleanup, "filesRestored", fileCount)
+
+	return ctrl.Result{Requeue: true}, nil
 }
 
 // handlePostRestorePhase determines the next phase after restoring.
@@ -494,9 +612,15 @@ func handleCleanupPhase(ctx context.Context, r *VirtualMachineFileRestoreReconci
 	}
 	if err := r.Get(ctx, vmKey, vm); err != nil {
 		if errors.IsNotFound(err) {
-			// VM already deleted, skip cleanup
-			logger.Info("Target VM not found, skipping cleanup")
-			return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseSucceeded, "Restore completed (VM not found)")
+			// VM deleted during restore (issue #10)
+			// Check if we successfully restored files before VM was deleted
+			if vmfr.Status.RestoredFilesCount > 0 {
+				logger.Info("Target VM was deleted after restore completed", "filesRestored", vmfr.Status.RestoredFilesCount)
+				return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseSucceeded,
+					fmt.Sprintf("Restored %d files (VM was deleted during cleanup)", vmfr.Status.RestoredFilesCount))
+			}
+			// VM deleted before restore completed
+			return failRestore(ctx, r, vmfr, err, "target VM was deleted before restore could complete")
 		}
 		return failRestore(ctx, r, vmfr, err, "failed to get target VM for cleanup")
 	}
@@ -506,7 +630,31 @@ func handleCleanupPhase(ctx context.Context, r *VirtualMachineFileRestoreReconci
 		return failRestore(ctx, r, vmfr, err, "failed to unplug volume from VM")
 	}
 
-	logger.Info("Volume unplugged from VM", "volumeName", GetVolumeName(vmfr.Name))
+	volumeName := GetVolumeName(vmfr.Name)
+	logger.Info("Volume unplugged from VM spec", "volumeName", volumeName)
+
+	// Issue #17: Verify volume is removed from VMI before completing
+	vmi := &v1.VirtualMachineInstance{}
+	vmiKey := client.ObjectKey{
+		Name:      vmfr.Spec.Target.Name,
+		Namespace: vmfr.Namespace,
+	}
+	if err := r.Get(ctx, vmiKey, vmi); err != nil {
+		if !errors.IsNotFound(err) {
+			return failRestore(ctx, r, vmfr, err, "failed to get VMI for unplug verification")
+		}
+		// VMI gone, volume is definitely detached
+	} else {
+		// Check if volume still exists in VMI status
+		for _, volumeStatus := range vmi.Status.VolumeStatus {
+			if volumeStatus.Name == volumeName {
+				logger.Info("Volume still in VMI status, waiting for detachment", "volumeName", volumeName)
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			}
+		}
+	}
+
+	logger.Info("Volume successfully detached from VM", "volumeName", volumeName)
 
 	// Record event
 	r.Recorder.Event(vmfr, corev1.EventTypeNormal, "VolumeUnplugged", "Volume unplugged from VM")

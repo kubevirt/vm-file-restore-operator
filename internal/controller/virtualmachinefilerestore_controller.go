@@ -89,11 +89,26 @@ func (r *VirtualMachineFileRestoreReconciler) Reconcile(ctx context.Context, req
 				logger.Error(err, "Error during cleanup, continuing to remove finalizer")
 			}
 
-			// Remove finalizer
-			controllerutil.RemoveFinalizer(vmFileRestore, finalizerName)
-			if err := r.Update(ctx, vmFileRestore); err != nil {
-				logger.Error(err, "Failed to remove finalizer")
-				return ctrl.Result{}, err
+			// Remove finalizer with retry (issue #12: fix refetch error handling)
+			const maxRetries = 3
+			for attempt := range maxRetries {
+				if attempt > 0 {
+					// Refetch to get latest version
+					if err := r.Get(ctx, req.NamespacedName, vmFileRestore); err != nil {
+						logger.Error(err, "Failed to refetch for finalizer removal", "attempt", attempt+1)
+						if attempt == maxRetries-1 {
+							return ctrl.Result{}, err
+						}
+						continue // Try next iteration
+					}
+				}
+				controllerutil.RemoveFinalizer(vmFileRestore, finalizerName)
+				if err := r.Update(ctx, vmFileRestore); err == nil {
+					break
+				} else if attempt == maxRetries-1 {
+					logger.Error(err, "Failed to remove finalizer after retries, CR may be stuck")
+					return ctrl.Result{}, err
+				}
 			}
 			logger.Info("Finalizer removed, deletion will proceed")
 		}
@@ -121,8 +136,11 @@ func (r *VirtualMachineFileRestoreReconciler) Reconcile(ctx context.Context, req
 	// Run phase handler
 	handler := getPhaseHandler(vmFileRestore.Status.Phase)
 	if handler == nil {
-		logger.Error(fmt.Errorf("unknown phase"), "No handler for phase", "phase", vmFileRestore.Status.Phase)
-		return ctrl.Result{}, nil
+		// Issue #13: return error instead of silently doing nothing
+		err := fmt.Errorf("unknown phase: %s", vmFileRestore.Status.Phase)
+		logger.Error(err, "No handler for phase")
+		// Transition to Failed to avoid stuck CR
+		return failRestore(ctx, r, vmFileRestore, err, "invalid phase - manual intervention required")
 	}
 
 	return handler(ctx, r, vmFileRestore)
@@ -155,11 +173,23 @@ func (r *VirtualMachineFileRestoreReconciler) cleanup(ctx context.Context, vmfr 
 			}, secret)
 			if err == nil {
 				privateKey := secret.Data[corev1.SSHAuthPrivateKey]
-				sshClient, err := ConnectSSH(ip, privateKey)
-				if err == nil {
-					defer sshClient.Close()
-					cleanupCmd := BuildCleanupCommand(osType, vmfr.Status.MountPath)
-					_, _, _ = sshClient.RunCommand(ctx, cleanupCmd)
+				// Only attempt SSH cleanup if we have a mount path
+				if vmfr.Status.MountPath == "" {
+					logger.Info("Skipping SSH cleanup - no mount path set (restore never reached that phase)")
+				} else {
+					sshClient, err := ConnectSSH(ip, privateKey)
+					if err == nil {
+						defer sshClient.Close()
+						cleanupCmd := BuildCleanupCommand(osType, vmfr.Status.MountPath)
+						// Issue #11: log cleanup errors instead of ignoring them
+						stdout, stderr, cmdErr := sshClient.RunCommand(ctx, cleanupCmd)
+						if cmdErr != nil {
+							logger.Info("Cleanup command failed (continuing anyway)",
+								"error", cmdErr,
+								"stdout", TruncateOutput(stdout, 20),
+								"stderr", TruncateOutput(stderr, 20))
+						}
+					}
 				}
 			}
 		}

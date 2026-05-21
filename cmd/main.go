@@ -22,6 +22,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -203,15 +204,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Generate SSH keypair on startup
+	// Generate SSH keypair on startup with retries
 	operatorNamespace := os.Getenv("OPERATOR_NAMESPACE")
 	if operatorNamespace == "" {
 		operatorNamespace = "vm-file-restore-operator-system"
 	}
 
 	setupLog.Info("Ensuring SSH keypair exists", "namespace", operatorNamespace)
-	if err := controller.EnsureSSHKeypair(context.Background(), mgr.GetClient(), operatorNamespace); err != nil {
-		setupLog.Error(err, "Failed to ensure SSH keypair")
+	var keypairErr error
+	for i := 0; i < 5; i++ {
+		if err := controller.EnsureSSHKeypair(context.Background(), mgr.GetClient(), operatorNamespace); err != nil {
+			keypairErr = err
+			setupLog.Error(err, "Failed to ensure SSH keypair, retrying", "attempt", i+1)
+			time.Sleep(time.Duration(i+1) * time.Second)
+			continue
+		}
+		keypairErr = nil
+		break
+	}
+	if keypairErr != nil {
+		setupLog.Error(keypairErr, "Failed to ensure SSH keypair after retries")
 		os.Exit(1)
 	}
 	setupLog.Info("SSH keypair ready")

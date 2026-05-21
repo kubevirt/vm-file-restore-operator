@@ -7,12 +7,12 @@ import (
 	"encoding/pem"
 	"fmt"
 
+	"golang.org/x/crypto/ssh"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -37,16 +37,25 @@ func EnsureSSHKeypair(ctx context.Context, c client.Client, namespace string) er
 		Namespace: namespace,
 	}, configMap)
 
-	// If both exist, skip generation
+	// If both exist, we're done
 	if secretErr == nil && cmErr == nil {
 		return nil
 	}
 
-	// If Secret exists but ConfigMap doesn't, cleanup orphaned Secret
-	if secretErr == nil && errors.IsNotFound(cmErr) {
-		if err := c.Delete(ctx, secret); err != nil {
-			return fmt.Errorf("failed to cleanup orphaned Secret: %w", err)
+	// If one is orphaned, clean up both and regenerate
+	if (secretErr == nil && errors.IsNotFound(cmErr)) || (errors.IsNotFound(secretErr) && cmErr == nil) {
+		// Clean up orphaned resources
+		if secretErr == nil {
+			if err := c.Delete(ctx, secret); client.IgnoreNotFound(err) != nil {
+				return fmt.Errorf("failed to cleanup orphaned Secret: %w", err)
+			}
 		}
+		if cmErr == nil {
+			if err := c.Delete(ctx, configMap); client.IgnoreNotFound(err) != nil {
+				return fmt.Errorf("failed to cleanup orphaned ConfigMap: %w", err)
+			}
+		}
+		// Fall through to generate new pair
 	}
 
 	// If there are any non-NotFound errors, fail
