@@ -126,17 +126,34 @@ type VirtualMachineFileRestoreStatus struct {
 	// ErrorMessage provides details about any error that occurred during restoration.
 	// +optional
 	ErrorMessage string `json:"errorMessage,omitempty"`
+
+	// MountPath is where the restore volume is mounted in the guest OS.
+	// For Linux: /backup, for Windows: C:\backup
+	// +optional
+	MountPath string `json:"mountPath,omitempty"`
 }
 
 // RestorePhase is a label for the phase of a VirtualMachineFileRestore operation.
-// +kubebuilder:validation:Enum=New;InProgress;Succeeded;Failed
+// +kubebuilder:validation:Enum=New;Init;Hotplugging;WaitingForAttachment;SSHConnecting;Restoring;VolumeReady;Cleanup;Succeeded;Failed
 type RestorePhase string
 
 const (
 	// RestorePhaseNew means the restore has been accepted but not yet started.
 	RestorePhaseNew RestorePhase = "New"
-	// RestorePhaseInProgress means the restore is currently in progress.
-	RestorePhaseInProgress RestorePhase = "InProgress"
+	// RestorePhaseInit means initialization and validation is in progress.
+	RestorePhaseInit RestorePhase = "Init"
+	// RestorePhaseHotplugging means the volume is being attached to the VM.
+	RestorePhaseHotplugging RestorePhase = "Hotplugging"
+	// RestorePhaseWaitingForAttachment means waiting for volume to be ready.
+	RestorePhaseWaitingForAttachment RestorePhase = "WaitingForAttachment"
+	// RestorePhaseSSHConnecting means establishing SSH connection to guest.
+	RestorePhaseSSHConnecting RestorePhase = "SSHConnecting"
+	// RestorePhaseRestoring means restore operation is in progress.
+	RestorePhaseRestoring RestorePhase = "Restoring"
+	// RestorePhaseVolumeReady means volume is mounted for manual restore.
+	RestorePhaseVolumeReady RestorePhase = "VolumeReady"
+	// RestorePhaseCleanup means removing volume and cleaning up.
+	RestorePhaseCleanup RestorePhase = "Cleanup"
 	// RestorePhaseSucceeded means the restore completed successfully.
 	RestorePhaseSucceeded RestorePhase = "Succeeded"
 	// RestorePhaseFailed means the restore failed.

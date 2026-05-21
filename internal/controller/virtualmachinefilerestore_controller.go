@@ -93,12 +93,12 @@ func (r *VirtualMachineFileRestoreReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Move to InProgress if currently New
+	// Move to Init if currently New
 	if vmFileRestore.Status.Phase == restorev1alpha1.RestorePhaseNew {
 		logger.Info("Starting restore operation")
-		vmFileRestore.Status.Phase = restorev1alpha1.RestorePhaseInProgress
+		vmFileRestore.Status.Phase = restorev1alpha1.RestorePhaseInit
 		if err := r.Status().Update(ctx, vmFileRestore); err != nil {
-			logger.Error(err, "Failed to update status to InProgress")
+			logger.Error(err, "Failed to update status to Init")
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{Requeue: true}, nil

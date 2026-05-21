@@ -215,12 +215,23 @@ spec:
                 description: ErrorMessage provides details about any error that occurred
                   during restoration.
                 type: string
+              mountPath:
+                description: |-
+                  MountPath is where the restore volume is mounted in the guest OS.
+                  For Linux: /backup, for Windows: C:\backup
+                type: string
               phase:
                 description: Phase represents the current phase of the file restore
                   operation.
                 enum:
                 - New
-                - InProgress
+                - Init
+                - Hotplugging
+                - WaitingForAttachment
+                - SSHConnecting
+                - Restoring
+                - VolumeReady
+                - Cleanup
                 - Succeeded
                 - Failed
                 type: string
