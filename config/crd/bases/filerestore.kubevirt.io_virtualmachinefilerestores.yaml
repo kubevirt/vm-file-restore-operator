@@ -148,6 +148,12 @@ spec:
             description: VirtualMachineFileRestoreStatus defines the observed state
               of VirtualMachineFileRestore.
             properties:
+              attachmentRetries:
+                description: |-
+                  AttachmentRetries tracks the number of times we've waited for volume attachment.
+                  Used to implement timeout for stuck attachments.
+                format: int32
+                type: integer
               completionTime:
                 description: CompletionTime is the time when the restore operation
                   completed.
@@ -238,6 +244,12 @@ spec:
               restoredFilesCount:
                 description: RestoredFilesCount is the number of files successfully
                   restored.
+                format: int32
+                type: integer
+              sshRetries:
+                description: |-
+                  SSHRetries tracks the number of SSH connection attempts.
+                  Used to implement retry logic for transient SSH failures.
                 format: int32
                 type: integer
               startTime:

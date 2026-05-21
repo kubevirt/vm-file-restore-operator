@@ -17,10 +17,12 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -31,12 +33,14 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	kubevirtv1 "kubevirt.io/api/core/v1"
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 	"kubevirt.io/vm-file-restore-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
@@ -50,6 +54,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
+	utilruntime.Must(kubevirtv1.AddToScheme(scheme))
 	utilruntime.Must(restorev1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
@@ -197,9 +202,43 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Generate SSH keypair on startup with retries
+	// Use a direct client (not cached) since the manager hasn't started yet
+	operatorNamespace := os.Getenv("OPERATOR_NAMESPACE")
+	if operatorNamespace == "" {
+		operatorNamespace = "vm-file-restore-operator-system"
+	}
+
+	setupLog.Info("Ensuring SSH keypair exists", "namespace", operatorNamespace)
+
+	// Create a direct client that doesn't use the cache
+	directClient, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
+	if err != nil {
+		setupLog.Error(err, "unable to create direct client for SSH keypair setup")
+		os.Exit(1)
+	}
+
+	var keypairErr error
+	for i := 0; i < 5; i++ {
+		if err := controller.EnsureSSHKeypair(context.Background(), directClient, operatorNamespace); err != nil {
+			keypairErr = err
+			setupLog.Error(err, "Failed to ensure SSH keypair, retrying", "attempt", i+1)
+			time.Sleep(time.Duration(i+1) * time.Second)
+			continue
+		}
+		keypairErr = nil
+		break
+	}
+	if keypairErr != nil {
+		setupLog.Error(keypairErr, "Failed to ensure SSH keypair after retries")
+		os.Exit(1)
+	}
+	setupLog.Info("SSH keypair ready")
+
 	if err := (&controller.VirtualMachineFileRestoreReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: operatorNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "VirtualMachineFileRestore")
 		os.Exit(1)
