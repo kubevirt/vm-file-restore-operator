@@ -1,8 +1,12 @@
 # HCO Integration Requirements
 
+> **Status:** This operator is currently **standalone**. HCO integration is planned but not yet implemented. The operator can be deployed and used independently without HCO.
+
 ## Overview
 
-To be managed by HCO (Hyperconverged Cluster Operator), your vm-file-restore-operator needs to follow the same pattern as other KubeVirt ecosystem operators (KubeVirt, CDI, SSP, AAQ).
+To be managed by HCO (Hyperconverged Cluster Operator), the vm-file-restore-operator needs to follow the same pattern as other KubeVirt ecosystem operators (KubeVirt, CDI, SSP, AAQ).
+
+**Current Implementation:** The operator currently implements the restore logic (VirtualMachineFileRestore CR and controller) and is fully functional as a standalone operator.
 
 ## HCO Architecture Pattern
 

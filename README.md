@@ -12,13 +12,47 @@ The VM File Restore Operator provides a declarative way to restore individual fi
 
 This operator simplifies disaster recovery and file-level backup scenarios for virtualized workloads running on KubeVirt, enabling granular restore operations without needing to restore entire VM disk images.
 
+## Features
+
+- **Declarative File Restore**: Use Kubernetes CRs to restore files to running VMs
+- **Multiple Source Types**: Restore from PVCs, VolumeSnapshots, or remote storage
+- **Automatic and Manual Modes**: Automatic restore with specified paths, or manual mode for interactive restore
+- **Hot-plug Technology**: No VM restart required - volumes are hot-plugged at runtime
+- **Guest OS Auto-Detection**: Automatically detects Linux/Windows and adjusts mount paths
+- **SSH-Based Execution**: Secure SSH access for executing restore commands in guest OS
+- **Robust Error Handling**: Automatic retries, timeouts, and detailed error reporting
+- **Idempotent Operations**: Safe to retry, handles partial failures gracefully
+
+## Architecture
+
+The operator uses a 9-phase state machine:
+
+```
+New → Init → Hotplugging → WaitingForAttachment → SSHConnecting → 
+  Restoring → Cleanup → Succeeded
+                    ↓
+                  Failed
+```
+
+**How it works:**
+1. **Init**: Validates target VM is running and source exists
+2. **Hotplugging**: Modifies VM spec to add restore volume (hot-plug)
+3. **WaitingForAttachment**: Waits for KubeVirt to attach volume to VMI
+4. **SSHConnecting**: Establishes SSH connection to VM guest OS
+5. **Restoring**: Executes helper script to mount and restore files
+6. **Cleanup**: Unplugs volume from VM, deletes temporary PVCs
+7. **Succeeded/Failed**: Terminal state with completion time
+
+**Special Mode:**
+- **VolumeReady**: Manual restore mode - volume stays attached until CR deletion
+
 ## Getting Started
 
 ### Prerequisites
-- go version v1.24.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+- go version v1.25.0+
+- docker version 17.03+
+- kubectl version v1.11.3+
+- Access to a Kubernetes v1.11.3+ cluster with KubeVirt installed
 
 ### To Deploy on the cluster
 **Build and push your image to the location specified by `IMG`:**
@@ -180,6 +214,34 @@ spec:
   sourcePath: /backups/application-data
 ```
 
+**Note:** Remote sources are planned but not yet implemented.
+
+#### Manual Restore Mode
+
+Omit `sourcePath` to hotplug the volume without automatic restore. The volume stays attached in `VolumeReady` phase until you delete the CR:
+
+```yaml
+apiVersion: filerestore.kubevirt.io/v1alpha1
+kind: VirtualMachineFileRestore
+metadata:
+  name: manual-restore
+spec:
+  target:
+    apiGroup: kubevirt.io
+    kind: VirtualMachine
+    name: fedora
+  source:
+    snapshot:
+      name: snap1
+  # No sourcePath - manual mode
+```
+
+In manual mode:
+1. Volume is hotplugged and mounted at `/backup` (Linux) or `C:\backup` (Windows)
+2. CR stays in `VolumeReady` phase
+3. SSH into VM and manually copy files
+4. Delete CR to unplug volume and clean up
+
 ### Check Restore Status
 
 ```sh
@@ -187,7 +249,33 @@ kubectl get vmfr
 kubectl describe vmfr restore-from-pvc
 ```
 
-The status will show the current phase (New, InProgress, Succeeded, Failed) and the number of files restored.
+The status shows the current phase and progress:
+
+**Phases:**
+- `New` - CR created, not yet started
+- `Init` - Validating target VM and source
+- `Hotplugging` - Attaching restore volume to VM
+- `WaitingForAttachment` - Waiting for volume to attach (max 5 minutes)
+- `SSHConnecting` - Establishing SSH connection (max 2 minutes with retry)
+- `Restoring` - Executing file restore command
+- `VolumeReady` - Manual restore mode (sourcePath empty), volume is mounted
+- `Cleanup` - Unplugging volume and cleaning up
+- `Succeeded` - Restore completed successfully
+- `Failed` - Restore failed (see errorMessage for details)
+
+**Status Fields:**
+- `phase` - Current phase of the restore
+- `startTime` - When the restore started
+- `completionTime` - When the restore completed
+- `restoredFilesCount` - Number of files restored
+- `mountPath` - Where the volume is mounted in guest OS
+- `errorMessage` - Details if restore failed
+- `conditions` - Additional status information
+
+**Timeouts and Retries:**
+- Volume attachment: 5-minute timeout with exponential backoff
+- SSH connection: 2-minute timeout with retry
+- All operations are idempotent and safe to retry
 
 ### To Uninstall
 **Delete the instances (CRs) from the cluster:**

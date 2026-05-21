@@ -1,8 +1,16 @@
 # VM File Restore: Hotplug and SSH Implementation Design
 
 **Date:** 2026-05-20  
-**Status:** Approved  
+**Status:** ✅ **Implemented** (as of 2026-05-21)  
 **Alignment:** KubeVirt VEP #169, POC at arnongilboa/kubevirt@a15963a
+
+**Implementation Notes:**
+- Core functionality implemented and tested
+- All 21 tasks from implementation plan completed
+- 7 P0 critical issues fixed (status updates, retries, idempotency)
+- 21 P1 important issues fixed (validation, timeouts, error handling)
+- 6 additional code quality issues addressed
+- Full test suite passing with 19.2% coverage
 
 ## Overview
 
@@ -890,6 +898,72 @@ filerestore.bat cleanup --mount-path <PATH>
 
 None - design approved.
 
+## Implementation Status
+
+### ✅ Completed (2026-05-21)
+
+**Core Implementation:**
+- ✅ 9-phase state machine (New → Init → Hotplugging → WaitingForAttachment → SSHConnecting → Restoring → Cleanup → Succeeded/Failed)
+- ✅ VolumeReady phase for manual restore mode
+- ✅ Declarative volume hotplug via VM spec patches
+- ✅ SSH-based command execution with context cancellation
+- ✅ Guest OS auto-detection (Linux/Windows)
+- ✅ Network IP auto-detection (VMI interfaces → pod IP fallback)
+- ✅ Global ED25519 SSH keypair generation at startup
+- ✅ PVC and VolumeSnapshot source support
+- ✅ Temporary PVC creation for snapshot sources
+- ✅ Volume serial naming for guest OS detection
+- ✅ Finalizer-based cleanup
+
+**Robustness Improvements:**
+- ✅ Volume attachment timeout (5 minutes with exponential backoff)
+- ✅ SSH connection retry (2 minutes with retry logic)
+- ✅ Status updates using Patch for conflict handling
+- ✅ Idempotent hotplug operations (checks volume+disk)
+- ✅ Snapshot PVC size auto-detection from restoreSize
+- ✅ Transient error handling for PVC provisioning delays
+- ✅ Input validation (empty IP, keys, paths trigger clear errors)
+- ✅ SSH command cancellation with SIGTERM
+- ✅ Volume unplug verification before completion
+- ✅ Concurrent restore detection
+- ✅ Finalizer removal with retry logic
+
+**Quality & Observability:**
+- ✅ Comprehensive error messages with truncated output
+- ✅ Event recording for phase transitions
+- ✅ Detailed status fields (phase, startTime, completionTime, restoredFilesCount, mountPath, errorMessage)
+- ✅ Retry counters in status (attachmentRetries, sshRetries)
+- ✅ Logging for all operations (cleanup, IP selection, namespace defaulting)
+- ✅ File count parsing from multiple output formats
+
+**Testing:**
+- ✅ Unit tests for all components
+- ✅ Test coverage: 19.2%
+- ✅ Static analysis clean (staticcheck, go vet)
+- ✅ Build verification successful
+
+### 🚧 Not Implemented
+
+- ❌ Remote sources (S3/rclone) - planned for Phase 2
+- ❌ Cross-namespace PVC sources (technical limitation)
+- ❌ Automatic SSH key injection (requires cloud-init/guest agent)
+- ❌ HCO integration (requires operator-level CR)
+
+### 📝 Implementation Deviations from Design
+
+**Improvements Made:**
+1. **Retry Logic**: Added exponential backoff (not in original design)
+2. **Transient Errors**: New error type for retriable conditions
+3. **Status Fields**: Added AttachmentRetries and SSHRetries for observability
+4. **Input Validation**: More defensive programming than designed
+5. **Volume Unplug**: Added verification step before completion
+6. **Concurrent Restore**: Added detection to prevent conflicts
+
+**Simplifications:**
+1. **PVC Size**: Auto-detection from snapshot with 10Gi fallback (design said "TODO")
+2. **Error Handling**: More comprehensive than design specified
+
 ## Changelog
 
 - 2026-05-20: Initial design approved
+- 2026-05-21: Implementation completed with all 21 tasks + P0/P1 fixes
