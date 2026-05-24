@@ -110,12 +110,15 @@ func transitionPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler
 
 // incrementRetryAndRequeue increments a retry counter and requeues with exponential backoff.
 // retryType should be "attachment" or "ssh".
+//
+//nolint:unparam // baseDelay is kept as parameter for future flexibility
 func incrementRetryAndRequeue(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vmfr *restorev1alpha1.VirtualMachineFileRestore, retryType string, baseDelay time.Duration) (ctrl.Result, error) {
 	patch := client.MergeFrom(vmfr.DeepCopy())
 
-	if retryType == "attachment" {
+	switch retryType {
+	case "attachment":
 		vmfr.Status.AttachmentRetries++
-	} else if retryType == "ssh" {
+	case "ssh":
 		vmfr.Status.SSHRetries++
 	}
 
@@ -446,7 +449,7 @@ func handleSSHConnectingPhase(ctx context.Context, r *VirtualMachineFileRestoreR
 		logger.Info("SSH connection failed, will retry", "ip", ip, "error", err, "attempt", vmfr.Status.SSHRetries+1)
 		return incrementRetryAndRequeue(ctx, r, vmfr, "ssh", 5*time.Second)
 	}
-	defer sshClient.Close()
+	defer sshClient.Close() //nolint:errcheck // Closing in defer is idiomatic
 
 	logger.Info("SSH connection established", "ip", ip)
 
@@ -515,7 +518,7 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 	if err != nil {
 		return failRestore(ctx, r, vmfr, err, fmt.Sprintf("failed to establish SSH connection to %s", ip))
 	}
-	defer sshClient.Close()
+	defer sshClient.Close() //nolint:errcheck // Closing in defer is idiomatic
 
 	// Build restore command
 	osType, _ := DetectGuestOS(vmi)

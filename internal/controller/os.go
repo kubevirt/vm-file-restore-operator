@@ -6,35 +6,52 @@ import (
 	v1 "kubevirt.io/api/core/v1"
 )
 
+const (
+	// OS types
+	osTypeLinux   = "linux"
+	osTypeWindows = "windows"
+
+	// OS detection annotation key
+	osAnnotationKey = "vm.kubevirt.io/os"
+
+	// Default mount paths
+	linuxMountPath   = "/backup"
+	windowsMountPath = `C:\backup`
+
+	// Helper script paths
+	linuxHelperScript   = "/usr/local/bin/filerestore.sh"
+	windowsHelperScript = `"C:\Program Files\filerestore\filerestore.bat"`
+)
+
 // DetectGuestOS determines if the VMI is running Windows or Linux.
 // Returns OS type ("windows" or "linux") and mount path.
 func DetectGuestOS(vmi *v1.VirtualMachineInstance) (osType string, mountPath string) {
 	// Strategy 1: Check vm.kubevirt.io/os annotation
 	if vmi.Annotations != nil {
-		if osAnnotation, exists := vmi.Annotations["vm.kubevirt.io/os"]; exists && osAnnotation != "" {
-			if strings.HasPrefix(strings.ToLower(osAnnotation), "windows") {
-				return "windows", "C:\\backup"
+		if osAnnotation, exists := vmi.Annotations[osAnnotationKey]; exists && osAnnotation != "" {
+			if strings.HasPrefix(strings.ToLower(osAnnotation), osTypeWindows) {
+				return osTypeWindows, windowsMountPath
 			}
-			return "linux", "/backup"
+			return osTypeLinux, linuxMountPath
 		}
 	}
 
 	// Strategy 2: Fallback to GuestOSInfo.Name from guest agent
 	if vmi.Status.GuestOSInfo.Name != "" {
-		if strings.Contains(strings.ToLower(vmi.Status.GuestOSInfo.Name), "windows") {
-			return "windows", "C:\\backup"
+		if strings.Contains(strings.ToLower(vmi.Status.GuestOSInfo.Name), osTypeWindows) {
+			return osTypeWindows, windowsMountPath
 		}
-		return "linux", "/backup"
+		return osTypeLinux, linuxMountPath
 	}
 
 	// Strategy 3: Default to Linux
-	return "linux", "/backup"
+	return osTypeLinux, linuxMountPath
 }
 
 // GetHelperScriptPath returns the path to the helper script based on OS.
 func GetHelperScriptPath(osType string) string {
-	if osType == "windows" {
-		return `"C:\Program Files\filerestore\filerestore.bat"`
+	if osType == osTypeWindows {
+		return windowsHelperScript
 	}
-	return "/usr/local/bin/filerestore.sh"
+	return linuxHelperScript
 }

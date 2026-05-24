@@ -179,7 +179,7 @@ func (r *VirtualMachineFileRestoreReconciler) cleanup(ctx context.Context, vmfr 
 				} else {
 					sshClient, err := ConnectSSH(ip, privateKey)
 					if err == nil {
-						defer sshClient.Close()
+						defer sshClient.Close() //nolint:errcheck // Closing in defer is idiomatic
 						cleanupCmd := BuildCleanupCommand(osType, vmfr.Status.MountPath)
 						// Issue #11: log cleanup errors instead of ignoring them
 						stdout, stderr, cmdErr := sshClient.RunCommand(ctx, cleanupCmd)

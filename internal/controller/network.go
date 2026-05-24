@@ -10,6 +10,10 @@ import (
 	v1 "kubevirt.io/api/core/v1"
 )
 
+const (
+	defaultInterfaceName = "default"
+)
+
 // GetVMIPAddress returns the IP address to use for SSH connection.
 // Tries VMI interfaces first, falls back to virt-launcher pod IP.
 func GetVMIPAddress(ctx context.Context, c client.Client, vmi *v1.VirtualMachineInstance) (string, error) {
@@ -20,7 +24,7 @@ func GetVMIPAddress(ctx context.Context, c client.Client, vmi *v1.VirtualMachine
 
 	// Issue 1 & 2: Try "default" interface first (preferred)
 	for _, iface := range vmi.Status.Interfaces {
-		if iface.Name == "default" && iface.IP != "" {
+		if iface.Name == defaultInterfaceName && iface.IP != "" {
 			return iface.IP, nil
 		}
 	}

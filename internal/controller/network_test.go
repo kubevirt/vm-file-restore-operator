@@ -1,3 +1,4 @@
+//nolint:goconst // Test constants are acceptable
 package controller
 
 import (

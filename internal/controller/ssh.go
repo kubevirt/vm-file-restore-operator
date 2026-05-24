@@ -62,7 +62,7 @@ func (c *SSHClient) RunCommand(ctx context.Context, command string) (stdout, std
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create session: %w", err)
 	}
-	defer session.Close()
+	defer session.Close() //nolint:errcheck // Closing in defer is idiomatic
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	session.Stdout = &stdoutBuf
@@ -111,7 +111,7 @@ func BuildSSHCommand(osType, volumeName, mountPath, sourcePath string) string {
 	scriptPath := GetHelperScriptPath(osType)
 
 	var cmd string
-	if osType == "windows" {
+	if osType == osTypeWindows {
 		// Windows: quote mount-path and source-path
 		if sourcePath != "" {
 			cmd = fmt.Sprintf(`%s restore --serial %s --mount-path "%s" --source-path "%s"`,
@@ -144,7 +144,7 @@ func BuildCleanupCommand(osType, mountPath string) string {
 	scriptPath := GetHelperScriptPath(osType)
 
 	var cmd string
-	if osType == "windows" {
+	if osType == osTypeWindows {
 		// Windows: quote mount-path
 		cmd = fmt.Sprintf(`%s cleanup --mount-path "%s"`, scriptPath, mountPath)
 	} else {

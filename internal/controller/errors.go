@@ -35,13 +35,13 @@ func (e *TransientError) Format(f fmt.State, verb rune) {
 	switch verb {
 	case 'v':
 		if f.Flag('+') {
-			fmt.Fprintf(f, "transient error: %s", e.msg)
+			_, _ = fmt.Fprintf(f, "transient error: %s", e.msg)
 			return
 		}
 		fallthrough
 	case 's':
-		fmt.Fprint(f, e.msg)
+		_, _ = fmt.Fprint(f, e.msg)
 	case 'q':
-		fmt.Fprintf(f, "%q", e.msg)
+		_, _ = fmt.Fprintf(f, "%q", e.msg)
 	}
 }
