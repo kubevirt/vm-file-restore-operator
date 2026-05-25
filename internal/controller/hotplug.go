@@ -8,8 +8,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	v1 "kubevirt.io/api/core/v1"
+	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -28,7 +28,8 @@ func GetVolumeName(crName string) string {
 
 // HotplugVolume hotplugs a restore volume to the target VM.
 // It handles PVC and snapshot sources, creating temporary PVCs for snapshots.
-func HotplugVolume(ctx context.Context, c client.Client, vmfr *restorev1alpha1.VirtualMachineFileRestore, vm *v1.VirtualMachine) error {
+// apiReader is a non-cached reader used to read DataVolume status immediately after creation.
+func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader, vmfr *restorev1alpha1.VirtualMachineFileRestore, vm *v1.VirtualMachine) error {
 	logger := log.FromContext(ctx)
 	volumeName := GetVolumeName(vmfr.Name)
 
@@ -126,9 +127,9 @@ func HotplugVolume(ctx context.Context, c client.Client, vmfr *restorev1alpha1.V
 			}
 		}
 
-		// Wait for DataVolume to be Succeeded
+		// Wait for DataVolume to be Succeeded (use direct API reader to avoid cache lag)
 		existing := &cdiv1beta1.DataVolume{}
-		if err := c.Get(ctx, client.ObjectKey{Name: volumeName, Namespace: vmfr.Namespace}, existing); err != nil {
+		if err := apiReader.Get(ctx, client.ObjectKey{Name: volumeName, Namespace: vmfr.Namespace}, existing); err != nil {
 			return fmt.Errorf("failed to get DataVolume: %w", err)
 		}
 		if existing.Status.Phase != cdiv1beta1.Succeeded {

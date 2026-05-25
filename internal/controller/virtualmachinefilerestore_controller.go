@@ -41,6 +41,7 @@ const (
 // VirtualMachineFileRestoreReconciler reconciles a VirtualMachineFileRestore object
 type VirtualMachineFileRestoreReconciler struct {
 	client.Client
+	APIReader         client.Reader
 	Scheme            *runtime.Scheme
 	Recorder          record.EventRecorder
 	OperatorNamespace string

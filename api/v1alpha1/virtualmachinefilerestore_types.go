@@ -141,6 +141,11 @@ type VirtualMachineFileRestoreStatus struct {
 	// Used to implement retry logic for transient SSH failures.
 	// +optional
 	SSHRetries int32 `json:"sshRetries,omitempty"`
+
+	// LastAttachmentCheckTime is the timestamp of the last attachment status check.
+	// Used for rate limiting to prevent rapid reconciliation loops.
+	// +optional
+	LastAttachmentCheckTime *metav1.Time `json:"lastAttachmentCheckTime,omitempty"`
 }
 
 // RestorePhase is a label for the phase of a VirtualMachineFileRestore operation.

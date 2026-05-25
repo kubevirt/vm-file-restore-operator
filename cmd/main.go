@@ -40,8 +40,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	kubevirtv1 "kubevirt.io/api/core/v1"
+	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 	"kubevirt.io/vm-file-restore-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
@@ -244,6 +244,7 @@ func main() {
 
 	if err := (&controller.VirtualMachineFileRestoreReconciler{
 		Client:            mgr.GetClient(),
+		APIReader:         mgr.GetAPIReader(),
 		Scheme:            mgr.GetScheme(),
 		OperatorNamespace: operatorNamespace,
 	}).SetupWithManager(mgr); err != nil {
