@@ -133,6 +133,7 @@ func HotplugVolume(ctx context.Context, c client.Client, vmfr *restorev1alpha1.V
 				AccessModes: []corev1.PersistentVolumeAccessMode{
 					corev1.ReadWriteMany,
 				},
+				VolumeMode: ptr.To(corev1.PersistentVolumeBlock),
 				Resources: corev1.VolumeResourceRequirements{
 					Requests: corev1.ResourceList{
 						corev1.ResourceStorage: storageSize,
