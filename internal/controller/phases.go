@@ -317,7 +317,7 @@ func handleHotpluggingPhase(ctx context.Context, r *VirtualMachineFileRestoreRec
 	}
 
 	// Hotplug the volume
-	if err := HotplugVolume(ctx, r.Client, vmfr, vm); err != nil {
+	if err := HotplugVolume(ctx, r.Client, r.APIReader, vmfr, vm); err != nil {
 		// Issue #5: Handle transient errors by requeuing instead of failing
 		if IsTransient(err) {
 			logger.Info("Hotplug encountered transient condition, will retry", "error", err)
@@ -347,6 +347,17 @@ func handleWaitingForAttachmentPhase(ctx context.Context, r *VirtualMachineFileR
 			fmt.Sprintf("volume did not attach after %d attempts (5 minutes)", maxAttachmentWait))
 	}
 
+	// Rate limiting: ensure at least 5 seconds between attachment checks
+	// to prevent rapid reconciliation loops from external triggers (VMI updates, etc.)
+	if vmfr.Status.LastAttachmentCheckTime != nil {
+		timeSinceLastCheck := time.Since(vmfr.Status.LastAttachmentCheckTime.Time)
+		if timeSinceLastCheck < 5*time.Second {
+			remainingWait := 5*time.Second - timeSinceLastCheck
+			logger.Info("Rate limiting attachment check", "remainingWait", remainingWait)
+			return ctrl.Result{RequeueAfter: remainingWait}, nil
+		}
+	}
+
 	// Get VMI
 	vmi := &v1.VirtualMachineInstance{}
 	vmiKey := client.ObjectKey{
@@ -367,6 +378,15 @@ func handleWaitingForAttachmentPhase(ctx context.Context, r *VirtualMachineFileR
 			volumeStatus = &vs
 			break
 		}
+	}
+
+	// Update last check timestamp before checking status
+	now := metav1.Now()
+	patch := client.MergeFrom(vmfr.DeepCopy())
+	vmfr.Status.LastAttachmentCheckTime = &now
+	if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
+		logger.Error(err, "Failed to update last attachment check time")
+		return ctrl.Result{}, err
 	}
 
 	// If volume not found in status, increment retry and requeue
@@ -412,6 +432,26 @@ func handleSSHConnectingPhase(ctx context.Context, r *VirtualMachineFileRestoreR
 		return failRestore(ctx, r, vmfr,
 			fmt.Errorf("SSH connection timeout"),
 			fmt.Sprintf("SSH connection failed after %d attempts (2 minutes)", maxSSHWait))
+	}
+
+	// Rate limiting: ensure at least 5 seconds between SSH connection attempts
+	// to prevent rapid reconciliation loops from external triggers
+	if vmfr.Status.LastSSHCheckTime != nil {
+		timeSinceLastCheck := time.Since(vmfr.Status.LastSSHCheckTime.Time)
+		if timeSinceLastCheck < 5*time.Second {
+			remainingWait := 5*time.Second - timeSinceLastCheck
+			logger.Info("Rate limiting SSH check", "remainingWait", remainingWait)
+			return ctrl.Result{RequeueAfter: remainingWait}, nil
+		}
+	}
+
+	// Update last check timestamp before attempting SSH connection
+	now := metav1.Now()
+	patch := client.MergeFrom(vmfr.DeepCopy())
+	vmfr.Status.LastSSHCheckTime = &now
+	if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
+		logger.Error(err, "Failed to update last SSH check time")
+		return ctrl.Result{}, err
 	}
 
 	// Get VMI
