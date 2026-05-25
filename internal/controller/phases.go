@@ -43,15 +43,15 @@ func getPhaseHandler(phase restorev1alpha1.RestorePhase) phaseHandler {
 	case restorev1alpha1.RestorePhaseNew, "":
 		return handleInitPhase
 	case restorev1alpha1.RestorePhaseInit:
-		return handleHotpluggingPhase
+		return handleInitPhase
 	case restorev1alpha1.RestorePhaseHotplugging:
-		return handleWaitingForAttachmentPhase
+		return handleHotpluggingPhase
 	case restorev1alpha1.RestorePhaseWaitingForAttachment:
-		return handleSSHConnectingPhase
+		return handleWaitingForAttachmentPhase
 	case restorev1alpha1.RestorePhaseSSHConnecting:
-		return handleRestoringPhase
+		return handleSSHConnectingPhase
 	case restorev1alpha1.RestorePhaseRestoring:
-		return handlePostRestorePhase
+		return handleRestoringPhase
 	case restorev1alpha1.RestorePhaseVolumeReady:
 		return handleVolumeReadyPhase
 	case restorev1alpha1.RestorePhaseCleanup:
