@@ -7,10 +7,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/utils/ptr"
+	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	v1 "kubevirt.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -92,35 +90,14 @@ func HotplugVolume(ctx context.Context, c client.Client, vmfr *restorev1alpha1.V
 			},
 		}
 	} else if vmfr.Spec.Source.Snapshot != nil {
-		// Issue #4: Query snapshot to get size
-		snapshot := &unstructured.Unstructured{}
-		snapshot.SetAPIVersion("snapshot.storage.k8s.io/v1")
-		snapshot.SetKind("VolumeSnapshot")
+		// Snapshot source: create DataVolume with empty storage spec
+		// DataVolume will automatically inherit access mode, volume mode, and size from snapshot
 		snapshotNamespace := vmfr.Spec.Source.Snapshot.Namespace
 		if snapshotNamespace == "" {
 			snapshotNamespace = vmfr.Namespace
 		}
-		snapshotKey := client.ObjectKey{
-			Name:      vmfr.Spec.Source.Snapshot.Name,
-			Namespace: snapshotNamespace,
-		}
-		if err := c.Get(ctx, snapshotKey, snapshot); err != nil {
-			return fmt.Errorf("failed to get snapshot: %w", err)
-		}
 
-		// Get restore size from snapshot status
-		storageSize := resource.MustParse("10Gi") // Default fallback
-		if restoreSize, found, err := unstructured.NestedString(snapshot.Object, "status", "restoreSize"); found && err == nil && restoreSize != "" {
-			if parsed, err := resource.ParseQuantity(restoreSize); err == nil {
-				storageSize = parsed
-				logger.Info("Using snapshot restore size", "size", restoreSize)
-			}
-		} else {
-			logger.Info("Snapshot restore size not available, using default", "size", storageSize.String())
-		}
-
-		// Snapshot source: create temporary PVC from snapshot
-		tempPVC := &corev1.PersistentVolumeClaim{
+		dataVolume := &cdiv1beta1.DataVolume{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      volumeName,
 				Namespace: vmfr.Namespace,
@@ -129,39 +106,34 @@ func HotplugVolume(ctx context.Context, c client.Client, vmfr *restorev1alpha1.V
 					"filerestore.kubevirt.io/name": vmfr.Name,
 				},
 			},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				AccessModes: []corev1.PersistentVolumeAccessMode{
-					corev1.ReadWriteMany,
-				},
-				VolumeMode: ptr.To(corev1.PersistentVolumeBlock),
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{
-						corev1.ResourceStorage: storageSize,
+			Spec: cdiv1beta1.DataVolumeSpec{
+				Source: &cdiv1beta1.DataVolumeSource{
+					Snapshot: &cdiv1beta1.DataVolumeSourceSnapshot{
+						Namespace: snapshotNamespace,
+						Name:      vmfr.Spec.Source.Snapshot.Name,
 					},
 				},
-				DataSource: &corev1.TypedLocalObjectReference{
-					APIGroup: ptr.To("snapshot.storage.k8s.io"),
-					Kind:     "VolumeSnapshot",
-					Name:     vmfr.Spec.Source.Snapshot.Name,
+				Storage: &cdiv1beta1.StorageSpec{
+					// Empty storage spec - CDI will automatically inherit from snapshot
 				},
 			},
 		}
 
-		// Create PVC, verify if already exists
-		if err := c.Create(ctx, tempPVC); err != nil {
+		// Create DataVolume, verify if already exists
+		if err := c.Create(ctx, dataVolume); err != nil {
 			if !errors.IsAlreadyExists(err) {
-				return fmt.Errorf("failed to create temp PVC from snapshot: %w", err)
+				return fmt.Errorf("failed to create DataVolume from snapshot: %w", err)
 			}
 		}
 
-		// Always verify the PVC is bound before proceeding (issue #5)
-		existing := &corev1.PersistentVolumeClaim{}
+		// Wait for DataVolume to be Succeeded
+		existing := &cdiv1beta1.DataVolume{}
 		if err := c.Get(ctx, client.ObjectKey{Name: volumeName, Namespace: vmfr.Namespace}, existing); err != nil {
-			return fmt.Errorf("failed to get temp PVC: %w", err)
+			return fmt.Errorf("failed to get DataVolume: %w", err)
 		}
-		if existing.Status.Phase != corev1.ClaimBound {
+		if existing.Status.Phase != cdiv1beta1.Succeeded {
 			// This is a transient condition - caller will retry
-			return NewTransientError(fmt.Sprintf("temp PVC is being provisioned (phase: %s), will retry", existing.Status.Phase))
+			return NewTransientError(fmt.Sprintf("DataVolume is provisioning (phase: %s), will retry", existing.Status.Phase))
 		}
 
 		volumeSource = v1.VolumeSource{
@@ -236,16 +208,16 @@ func UnplugVolume(ctx context.Context, c client.Client, vmfr *restorev1alpha1.Vi
 		return fmt.Errorf("failed to unplug volume from VM: %w", err)
 	}
 
-	// If snapshot source, delete temp PVC
+	// If snapshot source, delete DataVolume (which will delete the PVC)
 	if vmfr.Spec.Source.Snapshot != nil {
-		tempPVC := &corev1.PersistentVolumeClaim{
+		dataVolume := &cdiv1beta1.DataVolume{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      volumeName,
 				Namespace: vmfr.Namespace,
 			},
 		}
-		if err := c.Delete(ctx, tempPVC); err != nil && !errors.IsNotFound(err) {
-			return fmt.Errorf("delete temp PVC: %w", err)
+		if err := c.Delete(ctx, dataVolume); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete DataVolume: %w", err)
 		}
 	}
 
