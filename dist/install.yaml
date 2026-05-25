@@ -229,6 +229,12 @@ spec:
                 description: ErrorMessage provides details about any error that occurred
                   during restoration.
                 type: string
+              lastAttachmentCheckTime:
+                description: |-
+                  LastAttachmentCheckTime is the timestamp of the last attachment status check.
+                  Used for rate limiting to prevent rapid reconciliation loops.
+                format: date-time
+                type: string
               mountPath:
                 description: |-
                   MountPath is where the restore volume is mounted in the guest OS.

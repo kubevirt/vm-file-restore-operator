@@ -146,6 +146,11 @@ type VirtualMachineFileRestoreStatus struct {
 	// Used for rate limiting to prevent rapid reconciliation loops.
 	// +optional
 	LastAttachmentCheckTime *metav1.Time `json:"lastAttachmentCheckTime,omitempty"`
+
+	// LastSSHCheckTime is the timestamp of the last SSH connection attempt.
+	// Used for rate limiting to prevent rapid reconciliation loops.
+	// +optional
+	LastSSHCheckTime *metav1.Time `json:"lastSSHCheckTime,omitempty"`
 }
 
 // RestorePhase is a label for the phase of a VirtualMachineFileRestore operation.

@@ -430,6 +430,26 @@ func handleSSHConnectingPhase(ctx context.Context, r *VirtualMachineFileRestoreR
 			fmt.Sprintf("SSH connection failed after %d attempts (2 minutes)", maxSSHWait))
 	}
 
+	// Rate limiting: ensure at least 5 seconds between SSH connection attempts
+	// to prevent rapid reconciliation loops from external triggers
+	if vmfr.Status.LastSSHCheckTime != nil {
+		timeSinceLastCheck := time.Since(vmfr.Status.LastSSHCheckTime.Time)
+		if timeSinceLastCheck < 5*time.Second {
+			remainingWait := 5*time.Second - timeSinceLastCheck
+			logger.Info("Rate limiting SSH check", "remainingWait", remainingWait)
+			return ctrl.Result{RequeueAfter: remainingWait}, nil
+		}
+	}
+
+	// Update last check timestamp before attempting SSH connection
+	now := metav1.Now()
+	patch := client.MergeFrom(vmfr.DeepCopy())
+	vmfr.Status.LastSSHCheckTime = &now
+	if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
+		logger.Error(err, "Failed to update last SSH check time")
+		return ctrl.Result{}, err
+	}
+
 	// Get VMI
 	vmi := &v1.VirtualMachineInstance{}
 	vmiKey := client.ObjectKey{
