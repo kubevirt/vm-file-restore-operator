@@ -33,6 +33,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -205,15 +206,24 @@ func main() {
 	}
 
 	// Generate SSH keypair on startup with retries
+	// Use a direct client (not cached) since the manager hasn't started yet
 	operatorNamespace := os.Getenv("OPERATOR_NAMESPACE")
 	if operatorNamespace == "" {
 		operatorNamespace = "vm-file-restore-operator-system"
 	}
 
 	setupLog.Info("Ensuring SSH keypair exists", "namespace", operatorNamespace)
+
+	// Create a direct client that doesn't use the cache
+	directClient, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
+	if err != nil {
+		setupLog.Error(err, "unable to create direct client for SSH keypair setup")
+		os.Exit(1)
+	}
+
 	var keypairErr error
 	for i := 0; i < 5; i++ {
-		if err := controller.EnsureSSHKeypair(context.Background(), mgr.GetClient(), operatorNamespace); err != nil {
+		if err := controller.EnsureSSHKeypair(context.Background(), directClient, operatorNamespace); err != nil {
 			keypairErr = err
 			setupLog.Error(err, "Failed to ensure SSH keypair, retrying", "attempt", i+1)
 			time.Sleep(time.Duration(i+1) * time.Second)
