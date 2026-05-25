@@ -40,6 +40,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	kubevirtv1 "kubevirt.io/api/core/v1"
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 	"kubevirt.io/vm-file-restore-operator/internal/controller"
 	// +kubebuilder:scaffold:imports
@@ -53,6 +54,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
+	utilruntime.Must(kubevirtv1.AddToScheme(scheme))
 	utilruntime.Must(restorev1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
