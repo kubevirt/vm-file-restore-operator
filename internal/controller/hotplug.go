@@ -169,12 +169,15 @@ func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader
 		Serial: volumeName,
 	}
 
+	// Use Patch instead of Update to avoid conflicts from concurrent VM modifications
+	patch := client.MergeFrom(vm.DeepCopy())
+
 	// Append volume and disk to VM
 	vm.Spec.Template.Spec.Volumes = append(vm.Spec.Template.Spec.Volumes, volume)
 	vm.Spec.Template.Spec.Domain.Devices.Disks = append(vm.Spec.Template.Spec.Domain.Devices.Disks, disk)
 
-	// Update VM
-	if err := c.Update(ctx, vm); err != nil {
+	// Patch VM (safer than Update, avoids conflicts)
+	if err := c.Patch(ctx, vm, patch); err != nil {
 		return fmt.Errorf("failed to hotplug volume to VM: %w", err)
 	}
 
@@ -185,6 +188,9 @@ func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader
 // It also cleans up temporary PVCs created for snapshot sources.
 func UnplugVolume(ctx context.Context, c client.Client, vmfr *restorev1alpha1.VirtualMachineFileRestore, vm *v1.VirtualMachine) error {
 	volumeName := GetVolumeName(vmfr.Name)
+
+	// Use Patch instead of Update to avoid conflicts from concurrent VM modifications
+	patch := client.MergeFrom(vm.DeepCopy())
 
 	// Filter out the restore volume
 	filteredVolumes := []v1.Volume{}
@@ -204,8 +210,8 @@ func UnplugVolume(ctx context.Context, c client.Client, vmfr *restorev1alpha1.Vi
 	}
 	vm.Spec.Template.Spec.Domain.Devices.Disks = filteredDisks
 
-	// Update VM
-	if err := c.Update(ctx, vm); err != nil {
+	// Patch VM (safer than Update, avoids conflicts)
+	if err := c.Patch(ctx, vm, patch); err != nil {
 		return fmt.Errorf("failed to unplug volume from VM: %w", err)
 	}
 

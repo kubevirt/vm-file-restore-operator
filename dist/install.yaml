@@ -235,6 +235,12 @@ spec:
                   Used for rate limiting to prevent rapid reconciliation loops.
                 format: date-time
                 type: string
+              lastSSHCheckTime:
+                description: |-
+                  LastSSHCheckTime is the timestamp of the last SSH connection attempt.
+                  Used for rate limiting to prevent rapid reconciliation loops.
+                format: date-time
+                type: string
               mountPath:
                 description: |-
                   MountPath is where the restore volume is mounted in the guest OS.
