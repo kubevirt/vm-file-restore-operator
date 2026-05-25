@@ -156,6 +156,12 @@ spec:
             description: VirtualMachineFileRestoreStatus defines the observed state
               of VirtualMachineFileRestore.
             properties:
+              attachmentRetries:
+                description: |-
+                  AttachmentRetries tracks the number of times we've waited for volume attachment.
+                  Used to implement timeout for stuck attachments.
+                format: int32
+                type: integer
               completionTime:
                 description: CompletionTime is the time when the restore operation
                   completed.
@@ -248,6 +254,12 @@ spec:
                   restored.
                 format: int32
                 type: integer
+              sshRetries:
+                description: |-
+                  SSHRetries tracks the number of SSH connection attempts.
+                  Used to implement retry logic for transient SSH failures.
+                format: int32
+                type: integer
               startTime:
                 description: StartTime is the time when the restore operation started.
                 format: date-time
@@ -317,6 +329,16 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  - secrets
+  verbs:
+  - create
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - events
   verbs:
   - create
@@ -325,7 +347,6 @@ rules:
   - ""
   resources:
   - persistentvolumeclaims
-  - secrets
   verbs:
   - get
   - list
@@ -369,10 +390,20 @@ rules:
 - apiGroups:
   - kubevirt.io
   resources:
+  - virtualmachineinstances
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - kubevirt.io
+  resources:
   - virtualmachines
   verbs:
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - snapshot.storage.k8s.io
