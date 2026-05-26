@@ -47,7 +47,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 	// Before running the tests, set up the environment by creating the namespace,
 	// enforce the restricted security policy to the namespace, installing CRDs,
-	// and deploying the controller.
+	// and deploying the operator.
 	BeforeAll(func() {
 		By("creating manager namespace")
 		cmd := exec.Command("kubectl", "create", "ns", namespace)
@@ -65,20 +65,20 @@ var _ = Describe("Manager", Ordered, func() {
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
-		By("deploying the controller-manager")
+		By("deploying the operator")
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the operator")
 	})
 
-	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
+	// After all tests have been executed, clean up by undeploying the operator, uninstalling CRDs,
 	// and deleting the namespace.
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
 		_, _ = utils.Run(cmd)
 
-		By("undeploying the controller-manager")
+		By("undeploying the operator")
 		cmd = exec.Command("make", "undeploy")
 		_, _ = utils.Run(cmd)
 
@@ -96,13 +96,13 @@ var _ = Describe("Manager", Ordered, func() {
 	AfterEach(func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
-			By("Fetching controller manager pod logs")
+			By("Fetching operator pod logs")
 			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
 			controllerLogs, err := utils.Run(cmd)
 			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
+				_, _ = fmt.Fprintf(GinkgoWriter, "Operator logs:\n %s", controllerLogs)
 			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
+				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get operator logs: %s", err)
 			}
 
 			By("Fetching Kubernetes events")
@@ -123,13 +123,13 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get curl-metrics logs: %s", err)
 			}
 
-			By("Fetching controller manager pod description")
+			By("Fetching operator pod description")
 			cmd = exec.Command("kubectl", "describe", "pod", controllerPodName, "-n", namespace)
 			podDescription, err := utils.Run(cmd)
 			if err == nil {
 				fmt.Println("Pod description:\n", podDescription)
 			} else {
-				fmt.Println("Failed to describe controller pod")
+				fmt.Println("Failed to describe operator pod")
 			}
 		}
 	})
@@ -139,9 +139,9 @@ var _ = Describe("Manager", Ordered, func() {
 
 	Context("Manager", func() {
 		It("should run successfully", func() {
-			By("validating that the controller-manager pod is running as expected")
+			By("validating that the operator pod is running as expected")
 			verifyControllerUp := func(g Gomega) {
-				// Get the name of the controller-manager pod
+				// Get the name of the operator pod
 				cmd := exec.Command("kubectl", "get",
 					"pods", "-l", "control-plane=controller-manager",
 					"-o", "go-template={{ range .items }}"+
@@ -152,11 +152,11 @@ var _ = Describe("Manager", Ordered, func() {
 				)
 
 				podOutput, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve operator pod information")
 				podNames := utils.GetNonEmptyLines(podOutput)
-				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
+				g.Expect(podNames).To(HaveLen(1), "expected 1 operator pod running")
 				controllerPodName = podNames[0]
-				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
+				g.Expect(controllerPodName).To(ContainSubstring("vm-file-restore-operator"))
 
 				// Validate the pod's status
 				cmd = exec.Command("kubectl", "get",
@@ -165,7 +165,7 @@ var _ = Describe("Manager", Ordered, func() {
 				)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Running"), "Incorrect controller-manager pod status")
+				g.Expect(output).To(Equal("Running"), "Incorrect operator pod status")
 			}
 			Eventually(verifyControllerUp).Should(Succeed())
 		})
