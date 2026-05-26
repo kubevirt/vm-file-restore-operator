@@ -99,7 +99,7 @@ After deploying the operator, retrieve the public key:
 
 ```bash
 kubectl get configmap vm-file-restore-operator-ssh \
-  -n vm-file-restore-operator-system \
+  -n file-restore \
   -o jsonpath='{.data.ssh-publickey}'
 ```
 

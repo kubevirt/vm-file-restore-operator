@@ -208,7 +208,7 @@ func main() {
 	// Use a direct client (not cached) since the manager hasn't started yet
 	operatorNamespace := os.Getenv("OPERATOR_NAMESPACE")
 	if operatorNamespace == "" {
-		operatorNamespace = "vm-file-restore-operator-system"
+		operatorNamespace = "file-restore"
 	}
 
 	setupLog.Info("Ensuring SSH keypair exists", "namespace", operatorNamespace)

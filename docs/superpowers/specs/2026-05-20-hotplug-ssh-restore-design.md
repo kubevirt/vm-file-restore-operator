@@ -483,7 +483,7 @@ if isSnapshotSource {
 ```go
 func (r *VirtualMachineFileRestoreReconciler) ensureSSHKeypair(ctx context.Context) error {
     secretName := "vm-file-restore-operator-ssh"
-    namespace := "vm-file-restore-operator-system"
+    namespace := "file-restore"
     
     // Check if Secret exists
     secret := &corev1.Secret{}
@@ -539,7 +539,7 @@ func (r *VirtualMachineFileRestoreReconciler) ensureSSHKeypair(ctx context.Conte
 ```bash
 # Get public key to add to VMs
 kubectl get configmap vm-file-restore-operator-ssh \
-  -n vm-file-restore-operator-system \
+  -n file-restore \
   -o jsonpath='{.data.ssh-publickey}'
 ```
 

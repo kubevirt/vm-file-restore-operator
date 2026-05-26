@@ -31,16 +31,16 @@ import (
 )
 
 // namespace where the project is deployed in
-const namespace = "vm-file-restore-operator-system"
+const namespace = "file-restore"
 
 // serviceAccountName created for the project
-const serviceAccountName = "vm-file-restore-operator-controller-manager"
+const serviceAccountName = "vm-file-restore-controller-manager"
 
 // metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "vm-file-restore-operator-controller-manager-metrics-service"
+const metricsServiceName = "vm-file-restore-controller-manager-metrics-service"
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
-const metricsRoleBindingName = "vm-file-restore-operator-metrics-binding"
+const metricsRoleBindingName = "vm-file-restore-metrics-binding"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string

@@ -1287,7 +1287,7 @@ Update `cmd/main.go`, add after manager creation (around line 90):
 	// Generate SSH keypair on startup
 	operatorNamespace := os.Getenv("OPERATOR_NAMESPACE")
 	if operatorNamespace == "" {
-		operatorNamespace = "vm-file-restore-operator-system"
+		operatorNamespace = "file-restore"
 	}
 
 	setupLog.Info("Ensuring SSH keypair exists", "namespace", operatorNamespace)
@@ -1862,7 +1862,7 @@ func handleSSHConnectingPhase(ctx context.Context, r *VirtualMachineFileRestoreR
 	logger.Info("Connecting to VM", "ip", ip)
 
 	// Get SSH private key
-	operatorNamespace := "vm-file-restore-operator-system" // TODO: make configurable
+	operatorNamespace := "file-restore" // TODO: make configurable
 	secret := &corev1.Secret{}
 	err = r.Get(ctx, types.NamespacedName{
 		Name:      SSHKeypairSecretName,
@@ -1954,7 +1954,7 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 	}
 
 	// Get SSH private key
-	operatorNamespace := "vm-file-restore-operator-system"
+	operatorNamespace := "file-restore"
 	secret := &corev1.Secret{}
 	err = r.Get(ctx, types.NamespacedName{
 		Name:      SSHKeypairSecretName,
@@ -2097,7 +2097,7 @@ func handleCleanupPhase(ctx context.Context, r *VirtualMachineFileRestoreReconci
 		osType, _ := DetectGuestOS(vmi)
 		ip, err := GetVMIPAddress(ctx, r.Client, vmi)
 		if err == nil {
-			operatorNamespace := "vm-file-restore-operator-system"
+			operatorNamespace := "file-restore"
 			secret := &corev1.Secret{}
 			err = r.Get(ctx, types.NamespacedName{
 				Name:      SSHKeypairSecretName,
@@ -2198,7 +2198,7 @@ Replace the `// TODO: Implement cleanup logic` comment in cleanup method with:
 		osType, _ := DetectGuestOS(vmi)
 		ip, err := GetVMIPAddress(ctx, r.Client, vmi)
 		if err == nil {
-			operatorNamespace := "vm-file-restore-operator-system"
+			operatorNamespace := "file-restore"
 			secret := &corev1.Secret{}
 			err = r.Get(ctx, types.NamespacedName{
 				Name:      SSHKeypairSecretName,
@@ -2452,7 +2452,7 @@ After deploying the operator, retrieve the public key:
 
 ```bash
 kubectl get configmap vm-file-restore-operator-ssh \
-  -n vm-file-restore-operator-system \
+  -n file-restore \
   -o jsonpath='{.data.ssh-publickey}'
 ```
 

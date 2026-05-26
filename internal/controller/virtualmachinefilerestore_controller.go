@@ -215,7 +215,7 @@ func (r *VirtualMachineFileRestoreReconciler) getOperatorNamespace() string {
 	if r.OperatorNamespace != "" {
 		return r.OperatorNamespace
 	}
-	return "vm-file-restore-operator-system"
+	return "file-restore"
 }
 
 // setCondition adds or updates a condition in the condition list
