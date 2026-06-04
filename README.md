@@ -91,7 +91,7 @@ kubectl apply -k config/samples/
 
 ## SSH Setup for File Restore
 
-The operator requires SSH access to VMs to execute restore operations. Follow these steps:
+The operator requires SSH access to VMs to execute restore operations. The operator connects as user **`filerestore`** on both Linux and Windows VMs.
 
 ### 1. Get the Operator's SSH Public Key
 
@@ -103,22 +103,100 @@ kubectl get configmap vm-file-restore-operator-ssh \
   -o jsonpath='{.data.ssh-publickey}'
 ```
 
-### 2. Add Public Key to Your VMs
-
-Add the public key to `~/.ssh/authorized_keys` in each VM where you want to perform restores:
+### 2. Create `filerestore` User and Add SSH Key
 
 **For Linux VMs:**
 ```bash
-# SSH into your VM
-ssh user@vm-ip
+# 1. Create filerestore user
+sudo useradd -m -s /bin/bash filerestore
 
-# Add the operator's public key
-echo "ssh-ed25519 AAAA...xyz vm-file-restore-operator" >> ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
+# 2. Grant sudo access (required - the helper script needs root to mount volumes)
+sudo usermod -aG sudo filerestore  # Debian/Ubuntu
+# OR
+sudo usermod -aG wheel filerestore  # RHEL/Fedora/CentOS
+
+# Configure passwordless sudo (the script re-executes itself with sudo if needed)
+echo "filerestore ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/filerestore
+sudo chmod 440 /etc/sudoers.d/filerestore
+
+# 3. Create SSH directory
+sudo mkdir -p /home/filerestore/.ssh
+sudo chmod 700 /home/filerestore/.ssh
+
+# 4. Add operator's public key
+# First, get the key:
+kubectl get configmap vm-file-restore-operator-ssh -n file-restore \
+  -o jsonpath='{.data.ssh-publickey}'
+
+# Then add it to authorized_keys (copy-paste the output above):
+echo "<paste-public-key-here>" | sudo tee /home/filerestore/.ssh/authorized_keys
+
+# 5. Fix permissions
+sudo chmod 600 /home/filerestore/.ssh/authorized_keys
+sudo chown -R filerestore:filerestore /home/filerestore/.ssh
+```
+
+**Security Hardening (Optional):**
+
+Once the helper script is installed, restrict sudo access to only that script:
+```bash
+# Replace the sudoers rule to allow only the restore script
+echo "filerestore ALL=(ALL) NOPASSWD: /usr/local/bin/filerestore.sh" | \
+  sudo tee /etc/sudoers.d/filerestore
 ```
 
 **For Windows VMs:**
-Add the key to `C:\ProgramData\ssh\administrators_authorized_keys` or the user's `.ssh\authorized_keys`.
+
+Step 1 - Get the public key on your host:
+```bash
+kubectl get configmap vm-file-restore-operator-ssh -n file-restore \
+  -o jsonpath='{.data.ssh-publickey}' > /tmp/vm-restore-key.pub
+```
+
+Step 2 - Access the Windows VM and run these commands:
+```powershell
+# Use virtctl console or RDP to access the Windows VM
+
+# 1. Create filerestore user (set a password)
+net user filerestore <password> /add
+net localgroup Administrators filerestore /add
+
+# 2. Create SSH directory
+mkdir C:\Users\filerestore\.ssh
+
+# 3. Add operator's public key
+# Copy the content from /tmp/vm-restore-key.pub and paste it:
+echo "ssh-ed25519 AAAA...xyz vm-file-restore-operator" | `
+  Out-File -FilePath C:\Users\filerestore\.ssh\authorized_keys -Encoding ASCII
+
+# 4. Ensure OpenSSH Server is running
+Get-Service sshd | Start-Service
+Set-Service -Name sshd -StartupType Automatic
+```
+
+Alternatively, use `virtctl scp` to copy the key file directly:
+```bash
+virtctl scp /tmp/vm-restore-key.pub filerestore@<vm-name>:C:/Users/filerestore/.ssh/authorized_keys
+```
+
+**Test SSH Access:**
+
+Option 1 - Using virtctl (recommended):
+```bash
+# Access VM console and verify filerestore user exists
+virtctl console <vm-name>
+
+# Login and check authorized_keys
+su - filerestore
+cat ~/.ssh/authorized_keys  # Should contain operator's public key
+```
+
+Option 2 - Direct SSH (requires cluster admin access to read Secret):
+```bash
+# Only works if you have permissions to read Secrets in file-restore namespace
+kubectl get vmi <vm-name> -o jsonpath='{.status.interfaces[0].ipAddress}'
+# Then use the private key from the Secret (cluster-admin only)
+```
 
 ### 3. Install Helper Scripts in VMs
 

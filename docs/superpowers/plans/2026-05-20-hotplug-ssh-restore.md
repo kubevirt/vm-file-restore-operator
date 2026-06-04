@@ -1,11 +1,22 @@
 # Hotplug and SSH Restore Implementation Plan
 
-> **Status:** ✅ **COMPLETED** (2026-05-21)
-> All 21 tasks completed successfully. Additional improvements made beyond plan:
+> **Status:** ✅ **COMPLETED** (2026-05-21) + **ENHANCED** (2026-06-04)
+> 
+> **Original Implementation:**
+> - All 21 tasks completed successfully
 > - Fixed 7 P0 critical issues (status updates, retries, idempotency)
 > - Fixed 21 P1 important issues (validation, timeouts, error handling)
 > - Fixed 6 additional code quality issues
-> - See [Implementation Status](#implementation-status) section below
+> 
+> **Additional Enhancements (2026-06-04):**
+> - **SSH User:** Changed from `root` to dedicated `filerestore` user for cross-platform compatibility
+> - **Mount Paths:** Now include source name for uniqueness (`/backup-<pvc-or-snapshot-name>`)
+> - **Windows Support:** Fixed disk enumeration (ReadOnly: false), path handling, WMI-based device detection
+> - **Automated Setup:** Added `setup.sh` (Linux) and `setup.bat` (Windows) for VM preparation
+> - **Cleanup Timeout:** Added 30-second timeout to prevent finalizer blocking
+> - **Sudo Elevation:** Scripts handle privilege escalation internally
+> 
+> See [Implementation Status](#implementation-status) and [Enhancements](#enhancements-beyond-original-plan) sections below
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -882,7 +893,7 @@ func ConnectSSH(ip string, privateKey []byte) (*SSHClient, error) {
 	}
 
 	config := &ssh.ClientConfig{
-		User: "root",
+		User: "filerestore",
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
@@ -2642,3 +2653,133 @@ All 21 tasks from this plan have been successfully implemented and tested.
 5. **Helper scripts must be pre-installed** - No automatic deployment yet
 
 All core functionality is complete and tested. The operator is ready for integration testing with a real KubeVirt cluster.
+
+---
+
+## Enhancements Beyond Original Plan
+
+The following enhancements were implemented after the initial plan completion (June 2026):
+
+### 1. Dedicated `filerestore` SSH User
+
+**Why:** Cross-platform compatibility - Windows doesn't have a `root` user
+
+**Changes:**
+- SSH connection uses `filerestore` user instead of `root`
+- Helper scripts handle sudo elevation internally (`exec sudo "$0" "$@"`)
+- Works on both Linux and Windows with same user pattern
+
+**Files:**
+- `internal/controller/ssh.go` - Changed User: "filerestore"
+- `guest-helpers/linux/filerestore.sh` - Added sudo self-elevation
+- `guest-helpers/windows/filerestore.bat` - Runs as Administrator
+
+### 2. Mount Path Includes Source Name
+
+**Why:** Uniqueness when multiple concurrent restores exist on same VM
+
+**Implementation:**
+```go
+func getMountPath(vmi *v1.VirtualMachineInstance, sourceName string) string {
+    osType := DetectGuestOS(vmi)
+    if osType == osTypeWindows {
+        return windowsMountPath + "-" + sourceName  // C:\backup-<source>
+    }
+    return linuxMountPath + "-" + sourceName  // /backup-<source>
+}
+```
+
+**Examples:**
+- Snapshot `win11-pvc-snapshot-1` → `C:\backup-win11-pvc-snapshot-1`
+- PVC `my-backup-pvc` → `/backup-my-backup-pvc`
+
+**Files:**
+- `internal/controller/os.go` - Added `getMountPath()` and updated `DetectGuestOS()`
+- `internal/controller/phases.go` - Added `getSourceName()`, use `getMountPath()`
+- `internal/controller/phases_test.go` - Added tests
+
+### 3. Windows Compatibility Fixes
+
+**Disk Enumeration:**
+- Changed `ReadOnly: false` (was `true`) - Windows filters out readonly uninitialized disks
+- Added explicit `AccessModes: [ReadWriteOnce]` to DataVolume
+- Added `HotplugVolume != nil` check in WaitForAttachment phase
+
+**Path Handling:**
+- Fixed drive letter stripping: `C:\test` → `test` (was `C\test`)
+- Uses regex `^[A-Za-z]:\\` to strip drive and leading backslash
+
+**Device Detection:**
+- Linux: `lsblk` with serial number matching
+- Windows: WMI `Get-WmiObject -Class Win32_DiskDrive` (Get-Disk filters uninitialized disks)
+
+**Files:**
+- `internal/controller/hotplug.go` - ReadOnly: false, explicit AccessModes
+- `internal/controller/phases.go` - HotplugVolume check
+- `guest-helpers/windows/filerestore.bat` - Path regex, WMI detection
+
+### 4. Automated VM Setup Scripts
+
+**Linux (`guest-helpers/linux/setup.sh`):**
+```bash
+sudo ./setup.sh "ssh-ed25519 AAAA...xyz"
+```
+- Creates `filerestore` user with sudo access
+- Auto-detects sudo group (wheel/sudo)
+- Configures passwordless sudo
+- Installs SSH key in `~/.ssh/authorized_keys`
+- Downloads `filerestore.sh` from GitHub
+
+**Windows (`guest-helpers/windows/setup.bat`):**
+```cmd
+setup.bat "ssh-ed25519 AAAA...xyz"
+```
+- Creates `filerestore` user in Administrators group
+- Generates random password (required by Windows, never used)
+- Installs SSH key in `C:\ProgramData\ssh\administrators_authorized_keys`
+- Disables password authentication in `sshd_config`
+- Downloads `filerestore.bat` from GitHub
+
+### 5. Cleanup Timeout
+
+**Problem:** Cleanup SSH command could hang indefinitely, blocking finalizer and CR deletion
+
+**Solution:**
+```go
+cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+stdout, stderr, cmdErr := sshClient.RunCommand(cleanupCtx, cleanupCmd)
+```
+
+**Behavior:**
+- Success → unmount complete, proceed with volume unplug
+- Timeout → log warning, proceed with unplug anyway
+- Error → log error, proceed with unplug anyway
+
+**Files:**
+- `internal/controller/virtualmachinefilerestore_controller.go` - Added timeout context
+
+### 6. Manual Restore Mode Fix
+
+**Problem:** Manual restore mode (no `sourcePath`) wasn't mounting the volume - skipped Restoring phase entirely
+
+**Solution:**
+- All modes transition to Restoring phase to mount volume
+- Manual mode: Restoring → VolumeReady (volume stays mounted)
+- Automatic mode: Restoring → Cleanup (volume unmounted after copy)
+
+**Files:**
+- `internal/controller/phases.go` - Fixed `handleSSHConnectingPhase()` logic
+
+### Documentation Updates
+
+All documentation aligned with current implementation:
+- `README.md` - SSH setup for filerestore user, automated scripts
+- `docs/superpowers/specs/2026-05-20-hotplug-ssh-restore-design.md` - ReadOnly: false, mount paths, SSH user config
+- `docs/superpowers/plans/2026-05-20-hotplug-ssh-restore.md` - This section
+
+### Testing
+
+- Added `internal/controller/phases_test.go` - Tests for `getSourceName()` and mount path generation
+- Updated `internal/controller/os_test.go` - Tests for `getMountPath()`
+- All existing tests pass with new changes

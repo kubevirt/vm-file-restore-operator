@@ -185,10 +185,10 @@ newDisk := v1.Disk{
     DiskDevice: v1.DiskDevice{
         Disk: &v1.DiskTarget{
             Bus: v1.DiskBusSCSI,
-            ReadOnly: true,  // Safety: prevent accidental writes
+            ReadOnly: false,  // Required for Windows to properly enumerate the disk
         },
     },
-    Serial: volumeName,  // Guest uses this to find device via lsblk
+    Serial: volumeName,  // Guest uses this to find device via lsblk/Get-Disk
 }
 
 // JSON Patch with test-and-replace (POC pattern)
@@ -217,7 +217,7 @@ tempPVC := &corev1.PersistentVolumeClaim{
             Name: spec.Source.Snapshot.Name,
         },
         AccessModes: []corev1.PersistentVolumeAccessMode{
-            corev1.ReadOnlyMany,  // Preferred, fallback to ReadWriteOnce
+            corev1.ReadWriteOnce,  // Explicit access mode for DataVolume
         },
         Resources: corev1.VolumeResourceRequirements{
             Requests: corev1.ResourceList{
@@ -309,7 +309,7 @@ func connectSSH(ip string, privateKey []byte) (*ssh.Client, error) {
     }
     
     config := &ssh.ClientConfig{
-        User: "root",
+        User: "filerestore",
         Auth: []ssh.AuthMethod{
             ssh.PublicKeys(signer),
         },
@@ -554,7 +554,7 @@ User must add this public key to VM's `~/.ssh/authorized_keys` manually before c
 - `golang.org/x/crypto/ssh` - Go SSH library
 
 **Connection Configuration:**
-- User: `root`
+- User: `filerestore`
 - Auth: Public key (operator's private key)
 - Host key validation: Disabled (VMs can be recreated with same IP)
 - Timeout: 10 seconds per attempt
@@ -573,8 +573,9 @@ Following POC approach: patch VM spec using JSON Patch with test-and-replace ope
 
 **Volume Attributes:**
 - `Hotpluggable: true` - Enables dynamic attachment
-- `ReadOnly: true` - Safety measure (prevent accidental writes to backup)
+- `ReadOnly: false` - Required for Windows to properly enumerate disk
 - `Serial: <volumeName>` - Device identification in guest
+- `AccessModes: [ReadWriteOnce]` - Explicit access mode for DataVolume
 
 ### Source Type Handling
 
@@ -670,7 +671,10 @@ type VirtualMachineFileRestoreStatus struct {
     // ErrorMessage provides summary of any error
     ErrorMessage string `json:"errorMessage,omitempty"`
     
-    // MountPath is where the volume is mounted in guest (for manual mode)
+    // MountPath is where the volume is mounted in guest
+    // Generated as: <base-path>-<source-name>
+    // Linux: /backup-<pvc-or-snapshot-name>
+    // Windows: C:\backup-<pvc-or-snapshot-name>
     MountPath string `json:"mountPath,omitempty"`
 }
 ```
@@ -827,12 +831,12 @@ filerestore.bat cleanup --mount-path <PATH>
 ```
 
 **Script Responsibilities:**
-- Locate device by serial using `lsblk` (Linux) or equivalent (Windows)
+- Locate device by serial using `lsblk` (Linux) or `Get-Disk` via WMI (Windows)
 - Handle partitioned disks (find filesystem partition)
-- Mount read-only
-- For automatic mode: rsync/copy files, unmount, report success
-- For manual mode: mount and exit (leave mounted)
-- For cleanup: unmount and remove mount point
+- Mount the volume (scripts handle sudo elevation internally)
+- For automatic mode: copy files with robocopy/rsync, unmount, report file count
+- For manual mode: mount and exit (leave mounted for user access)
+- For cleanup: unmount and remove mount point/junction
 
 ### RBAC Requirements
 
@@ -881,10 +885,30 @@ filerestore.bat cleanup --mount-path <PATH>
 - Automatic injection via cloud-init
 - Temporary keys deleted after restore
 
+### SSH User Configuration
+
+**User:** `filerestore` (dedicated service account, not root)
+
+**Linux Setup:**
+- User in sudo group (wheel for RHEL/Fedora, sudo for Debian/Ubuntu)
+- Passwordless sudo configured for helper script
+- Scripts handle sudo elevation internally (`exec sudo "$0" "$@"`)
+
+**Windows Setup:**
+- User in Administrators group
+- SSH key in `C:\ProgramData\ssh\administrators_authorized_keys`
+- Password authentication disabled in sshd_config
+
+**Automated Setup Scripts:**
+- `guest-helpers/linux/setup.sh` - Creates user, configures sudo, installs key
+- `guest-helpers/windows/setup.bat` - Creates user, configures SSH, installs key
+
 ### Volume Access
 
-- Volumes mounted **read-only** to prevent accidental modification of backups
-- Snapshot sources use temporary PVC (isolated from original)
+- Volumes hotplugged with ReadOnly: false for Windows compatibility
+- Snapshot sources use temporary DataVolume (isolated from original)
+- DataVolumes created with explicit ReadWriteOnce access mode
+- Finalizer ensures cleanup on CR deletion (30-second timeout)
 - Manual cleanup fallback prevents orphaned volumes
 
 ### Network Access
