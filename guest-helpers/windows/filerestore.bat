@@ -193,8 +193,9 @@ if (-not $SourcePath) {
 $copyFailed = $false
 try {
     # Construct relative backup path
-    # Convert "C:\foo\bar" to "C\foo\bar" for storage on the backup volume (strip colon from drive letter)
-    $RelativePath = $SourcePath -replace ':', ''
+    # For full disk snapshots, strip drive letter and leading backslash
+    # "C:\test" -> "test", "C:\foo\bar" -> "foo\bar"
+    $RelativePath = $SourcePath -replace '^[A-Za-z]:\\', ''
     $BackupPath = Join-Path $MountPath $RelativePath
 
     # Validate source path on the backup volume (checked after mount)
