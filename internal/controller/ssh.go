@@ -35,7 +35,7 @@ func ConnectSSH(ip string, privateKey []byte) (*SSHClient, error) {
 
 	// Create SSH client configuration
 	config := &ssh.ClientConfig{
-		User: "root",
+		User: "filerestore",
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(signer),
 		},
@@ -121,7 +121,7 @@ func BuildSSHCommand(osType, volumeName, mountPath, sourcePath string) string {
 				scriptPath, volumeName, mountPath)
 		}
 	} else {
-		// Linux: no quoting needed
+		// Linux: script handles sudo internally (see filerestore.sh)
 		if sourcePath != "" {
 			cmd = fmt.Sprintf(`%s restore --serial %s --mount-path %s --source-path %s`,
 				scriptPath, volumeName, mountPath, sourcePath)
@@ -148,7 +148,7 @@ func BuildCleanupCommand(osType, mountPath string) string {
 		// Windows: quote mount-path
 		cmd = fmt.Sprintf(`%s cleanup --mount-path "%s"`, scriptPath, mountPath)
 	} else {
-		// Linux: no quoting needed
+		// Linux: script handles sudo internally (see filerestore.sh)
 		cmd = fmt.Sprintf(`%s cleanup --mount-path %s`, scriptPath, mountPath)
 	}
 

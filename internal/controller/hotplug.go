@@ -115,7 +115,9 @@ func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader
 					},
 				},
 				Storage: &cdiv1beta1.StorageSpec{
-					// Empty storage spec - CDI will automatically inherit from snapshot
+					AccessModes: []corev1.PersistentVolumeAccessMode{
+						corev1.ReadWriteOnce,
+					},
 				},
 			},
 		}
@@ -157,13 +159,13 @@ func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader
 		VolumeSource: volumeSource,
 	}
 
-	// Create disk with SCSI bus, read-only, and serial number for guest detection
+	// Create disk with SCSI bus and serial number for guest detection
 	disk := v1.Disk{
 		Name: volumeName,
 		DiskDevice: v1.DiskDevice{
 			Disk: &v1.DiskTarget{
 				Bus:      v1.DiskBusSCSI,
-				ReadOnly: true,
+				ReadOnly: false,
 			},
 		},
 		Serial: volumeName,

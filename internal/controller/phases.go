@@ -34,6 +34,19 @@ import (
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 )
 
+// getSourceName returns the source name (PVC or snapshot name) from the VMFR spec.
+// This is used to generate unique mount paths.
+func getSourceName(vmfr *restorev1alpha1.VirtualMachineFileRestore) string {
+	if vmfr.Spec.Source.PVC != nil {
+		return vmfr.Spec.Source.PVC.Name
+	}
+	if vmfr.Spec.Source.Snapshot != nil {
+		return vmfr.Spec.Source.Snapshot.Name
+	}
+	// Fallback to VMFR name if no source specified (shouldn't happen with validation)
+	return vmfr.Name
+}
+
 // phaseHandler is a function signature for phase handlers.
 type phaseHandler func(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vmfr *restorev1alpha1.VirtualMachineFileRestore) (ctrl.Result, error)
 
@@ -284,9 +297,11 @@ func handleInitPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler
 		return failRestore(ctx, r, vmfr, fmt.Errorf("remote sources not supported"), "remote restore source is not yet implemented")
 	}
 
-	// Detect guest OS
-	osType, mountPath := DetectGuestOS(vmi)
-	logger.Info("Detected guest OS", "osType", osType, "mountPath", mountPath)
+	// Detect guest OS and generate mount path based on source name
+	osType := DetectGuestOS(vmi)
+	sourceName := getSourceName(vmfr)
+	mountPath := getMountPath(vmi, sourceName)
+	logger.Info("Detected guest OS", "osType", osType, "mountPath", mountPath, "sourceName", sourceName)
 
 	// Set mount path in status using Patch for consistency (issue #1)
 	patch := client.MergeFrom(vmfr.DeepCopy())
@@ -407,6 +422,12 @@ func handleWaitingForAttachmentPhase(ctx context.Context, r *VirtualMachineFileR
 		return incrementRetryAndRequeue(ctx, r, vmfr, "attachment", 5*time.Second)
 	}
 
+	// Verify it's actually a hotplug volume
+	if volumeStatus.HotplugVolume == nil {
+		return failRestore(ctx, r, vmfr, fmt.Errorf("volume is not a hotplug volume"),
+			fmt.Sprintf("Volume %s exists but is not marked as hotplugged", volumeName))
+	}
+
 	logger.Info("Volume attached and bound", "volumeName", volumeName, "target", volumeStatus.Target)
 
 	// Reset retry counter
@@ -507,19 +528,20 @@ func handleSSHConnectingPhase(ctx context.Context, r *VirtualMachineFileRestoreR
 	}
 
 	// Detect OS and mount path (already set in Init, but re-detect for safety)
-	osType, mountPath := DetectGuestOS(vmi)
-	logger.Info("Guest OS detection complete", "osType", osType, "mountPath", mountPath)
+	osType := DetectGuestOS(vmi)
+	sourceName := getSourceName(vmfr)
+	mountPath := getMountPath(vmi, sourceName)
+	logger.Info("Guest OS detection complete", "osType", osType, "mountPath", mountPath, "sourceName", sourceName)
 
-	// Determine next phase based on sourcePath
+	// All modes transition to Restoring to mount the volume
+	// Manual mode (no sourcePath): script mounts read-only and exits
+	// Automatic mode (with sourcePath): script mounts, restores files, unmounts
 	if vmfr.Spec.SourcePath == "" {
-		// Manual mode: transition to VolumeReady
-		logger.Info("Manual restore mode (no sourcePath), transitioning to VolumeReady")
-		return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseVolumeReady, "Volume ready for manual restore")
+		logger.Info("Manual restore mode (no sourcePath), transitioning to Restoring for mount-only")
+	} else {
+		logger.Info("Automatic restore mode, transitioning to Restoring")
 	}
-
-	// Automatic mode: transition to Restoring
-	logger.Info("Automatic restore mode, transitioning to Restoring")
-	return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseRestoring, "SSH connected, starting file restore")
+	return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseRestoring, "SSH connected, starting restore")
 }
 
 // handleRestoringPhase executes the restore command via SSH and transitions to Cleanup.
@@ -565,7 +587,7 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 	defer sshClient.Close() //nolint:errcheck // Closing in defer is idiomatic
 
 	// Build restore command
-	osType, _ := DetectGuestOS(vmi)
+	osType := DetectGuestOS(vmi)
 	volumeName := GetVolumeName(vmfr.Name)
 	command := BuildSSHCommand(osType, volumeName, vmfr.Status.MountPath, vmfr.Spec.SourcePath)
 
@@ -602,38 +624,38 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 
 	logger.Info("File restore completed", "filesRestored", fileCount)
 
+	// Determine next phase based on mode
+	var nextPhase restorev1alpha1.RestorePhase
+	var eventMsg string
+
+	if vmfr.Spec.SourcePath == "" {
+		// Manual mode: volume is mounted, transition to VolumeReady
+		nextPhase = restorev1alpha1.RestorePhaseVolumeReady
+		eventMsg = "Volume mounted at " + vmfr.Status.MountPath + ", ready for manual restore"
+		logger.Info("Manual mode: transitioning to VolumeReady")
+	} else {
+		// Automatic mode: files restored, transition to Cleanup
+		nextPhase = restorev1alpha1.RestorePhaseCleanup
+		eventMsg = fmt.Sprintf("Restored %d files, cleaning up", fileCount)
+		logger.Info("Automatic mode: transitioning to Cleanup", "filesRestored", fileCount)
+	}
+
 	// Update file count and transition phase atomically (issue #9)
 	patch := client.MergeFrom(vmfr.DeepCopy())
 	vmfr.Status.RestoredFilesCount = fileCount
-	vmfr.Status.Phase = restorev1alpha1.RestorePhaseCleanup
+	vmfr.Status.Phase = nextPhase
 
 	if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
-		logger.Error(err, "Failed to update status during phase transition to Cleanup")
+		logger.Error(err, "Failed to update status during phase transition", "targetPhase", nextPhase)
 		return ctrl.Result{}, err
 	}
 
 	// Log transition and emit event
-	r.Recorder.Event(vmfr, corev1.EventTypeNormal, string(restorev1alpha1.RestorePhaseCleanup),
-		fmt.Sprintf("Restored %d files, cleaning up", fileCount))
+	r.Recorder.Event(vmfr, corev1.EventTypeNormal, string(nextPhase), eventMsg)
 	logger.Info("Phase transition", "oldPhase", restorev1alpha1.RestorePhaseRestoring,
-		"newPhase", restorev1alpha1.RestorePhaseCleanup, "filesRestored", fileCount)
+		"newPhase", nextPhase, "filesRestored", fileCount)
 
 	return ctrl.Result{Requeue: true}, nil
-}
-
-// handlePostRestorePhase determines the next phase after restoring.
-func handlePostRestorePhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vmfr *restorev1alpha1.VirtualMachineFileRestore) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
-	// Check if manual mode (sourcePath empty)
-	if vmfr.Spec.SourcePath == "" {
-		logger.Info("Manual restore mode, transitioning to VolumeReady")
-		return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseVolumeReady, "Volume ready for manual restore")
-	}
-
-	// Automatic mode: transition to Cleanup
-	logger.Info("Automatic restore mode, transitioning to Cleanup")
-	return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseCleanup, "Restore complete, cleaning up")
 }
 
 // handleVolumeReadyPhase handles manual restore mode - volume is mounted, waiting for user.

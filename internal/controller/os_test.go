@@ -17,13 +17,10 @@ func TestDetectGuestOS_FromAnnotation_Windows(t *testing.T) {
 		},
 	}
 
-	osType, mountPath := DetectGuestOS(vmi)
+	osType := DetectGuestOS(vmi)
 
 	if osType != "windows" {
 		t.Errorf("expected osType 'windows', got '%s'", osType)
-	}
-	if mountPath != "C:\\backup" {
-		t.Errorf("expected mountPath 'C:\\backup', got '%s'", mountPath)
 	}
 }
 
@@ -36,13 +33,10 @@ func TestDetectGuestOS_FromAnnotation_Linux(t *testing.T) {
 		},
 	}
 
-	osType, mountPath := DetectGuestOS(vmi)
+	osType := DetectGuestOS(vmi)
 
 	if osType != "linux" {
 		t.Errorf("expected osType 'linux', got '%s'", osType)
-	}
-	if mountPath != "/backup" {
-		t.Errorf("expected mountPath '/backup', got '%s'", mountPath)
 	}
 }
 
@@ -55,26 +49,54 @@ func TestDetectGuestOS_FromGuestOSInfo_Windows(t *testing.T) {
 		},
 	}
 
-	osType, mountPath := DetectGuestOS(vmi)
+	osType := DetectGuestOS(vmi)
 
 	if osType != "windows" {
 		t.Errorf("expected osType 'windows', got '%s'", osType)
-	}
-	if mountPath != "C:\\backup" {
-		t.Errorf("expected mountPath 'C:\\backup', got '%s'", mountPath)
 	}
 }
 
 func TestDetectGuestOS_DefaultToLinux(t *testing.T) {
 	vmi := &v1.VirtualMachineInstance{}
 
-	osType, mountPath := DetectGuestOS(vmi)
+	osType := DetectGuestOS(vmi)
 
 	if osType != "linux" {
 		t.Errorf("expected osType 'linux', got '%s'", osType)
 	}
-	if mountPath != "/backup" {
-		t.Errorf("expected mountPath '/backup', got '%s'", mountPath)
+}
+
+func TestGetMountPath_Windows(t *testing.T) {
+	vmi := &v1.VirtualMachineInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				"vm.kubevirt.io/os": "windows2022",
+			},
+		},
+	}
+
+	mountPath := getMountPath(vmi, "win11-pvc-snapshot-1")
+
+	expected := `C:\backup-win11-pvc-snapshot-1`
+	if mountPath != expected {
+		t.Errorf("expected mountPath '%s', got '%s'", expected, mountPath)
+	}
+}
+
+func TestGetMountPath_Linux(t *testing.T) {
+	vmi := &v1.VirtualMachineInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				"vm.kubevirt.io/os": "fedora",
+			},
+		},
+	}
+
+	mountPath := getMountPath(vmi, "my-backup-pvc")
+
+	expected := "/backup-my-backup-pvc"
+	if mountPath != expected {
+		t.Errorf("expected mountPath '%s', got '%s'", expected, mountPath)
 	}
 }
 
@@ -110,13 +132,10 @@ func TestDetectGuestOS_AnnotationPriority(t *testing.T) {
 		},
 	}
 
-	osType, mountPath := DetectGuestOS(vmi)
+	osType := DetectGuestOS(vmi)
 
 	if osType != "windows" {
 		t.Errorf("expected osType 'windows' (annotation should take priority), got '%s'", osType)
-	}
-	if mountPath != "C:\\backup" {
-		t.Errorf("expected mountPath 'C:\\backup', got '%s'", mountPath)
 	}
 }
 
@@ -140,13 +159,10 @@ func TestDetectGuestOS_CaseSensitivity(t *testing.T) {
 				},
 			}
 
-			osType, mountPath := DetectGuestOS(vmi)
+			osType := DetectGuestOS(vmi)
 
 			if osType != "windows" {
 				t.Errorf("annotation '%s': expected osType 'windows', got '%s'", tc.annotation, osType)
-			}
-			if mountPath != "C:\\backup" {
-				t.Errorf("annotation '%s': expected mountPath 'C:\\backup', got '%s'", tc.annotation, mountPath)
 			}
 		})
 	}
@@ -166,13 +182,10 @@ func TestDetectGuestOS_EmptyAnnotation(t *testing.T) {
 		},
 	}
 
-	osType, mountPath := DetectGuestOS(vmi)
+	osType := DetectGuestOS(vmi)
 
 	if osType != "windows" {
 		t.Errorf("expected osType 'windows' (empty annotation should fall through to GuestOSInfo), got '%s'", osType)
-	}
-	if mountPath != "C:\\backup" {
-		t.Errorf("expected mountPath 'C:\\backup', got '%s'", mountPath)
 	}
 }
 
@@ -204,13 +217,10 @@ func TestDetectGuestOS_GuestOSInfoCaseSensitivity(t *testing.T) {
 				},
 			}
 
-			osType, mountPath := DetectGuestOS(vmi)
+			osType := DetectGuestOS(vmi)
 
 			if osType != "windows" {
 				t.Errorf("GuestOSInfo.Name '%s': expected osType 'windows', got '%s'", tc.guestOSName, osType)
-			}
-			if mountPath != "C:\\backup" {
-				t.Errorf("GuestOSInfo.Name '%s': expected mountPath 'C:\\backup', got '%s'", tc.guestOSName, mountPath)
 			}
 		})
 	}

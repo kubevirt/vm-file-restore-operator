@@ -16,6 +16,11 @@
 
 set -e
 
+# Re-execute with sudo if not running as root (mount/umount require root)
+if [ "$EUID" -ne 0 ]; then
+    exec sudo "$0" "$@"
+fi
+
 usage() {
     echo "Usage:"
     echo "  $0 restore --serial <SERIAL> --mount-path <PATH> [--source-path <PATH>]"

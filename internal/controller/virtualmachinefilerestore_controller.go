@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -164,7 +165,7 @@ func (r *VirtualMachineFileRestoreReconciler) cleanup(ctx context.Context, vmfr 
 
 	if err == nil {
 		// Run SSH cleanup
-		osType, _ := DetectGuestOS(vmi)
+		osType := DetectGuestOS(vmi)
 		ip, err := GetVMIPAddress(ctx, r.Client, vmi)
 		if err == nil {
 			operatorNamespace := r.getOperatorNamespace()
@@ -183,13 +184,19 @@ func (r *VirtualMachineFileRestoreReconciler) cleanup(ctx context.Context, vmfr 
 					if err == nil {
 						defer sshClient.Close() //nolint:errcheck // Closing in defer is idiomatic
 						cleanupCmd := BuildCleanupCommand(osType, vmfr.Status.MountPath)
+						// Create context with 30-second timeout for cleanup
+						cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
 						// Issue #11: log cleanup errors instead of ignoring them
-						stdout, stderr, cmdErr := sshClient.RunCommand(ctx, cleanupCmd)
+						stdout, stderr, cmdErr := sshClient.RunCommand(cleanupCtx, cleanupCmd)
 						if cmdErr != nil {
 							logger.Info("Cleanup command failed (continuing anyway)",
 								"error", cmdErr,
 								"stdout", TruncateOutput(stdout, 20),
 								"stderr", TruncateOutput(stderr, 20))
+						} else {
+							logger.Info("Cleanup command succeeded",
+								"stdout", TruncateOutput(stdout, 20))
 						}
 					}
 				}
