@@ -25,6 +25,23 @@ exit /b %_RC%
 
 $ErrorActionPreference = 'Stop'
 
+# When invoked via SSH with command= restriction, validate and extract arguments
+if ($env:SSH_ORIGINAL_COMMAND) {
+    # Verify command starts with allowed script path
+    if ($env:SSH_ORIGINAL_COMMAND -notmatch '^"?C:\\Program Files\\filerestore\\filerestore\.bat"?') {
+        Write-Host "ERROR: Only filerestore.bat commands are allowed" -ForegroundColor Red
+        exit 1
+    }
+
+    # Strip the script path to get just the arguments
+    $arguments = $env:SSH_ORIGINAL_COMMAND -replace '^"?C:\\Program Files\\filerestore\\filerestore\.bat"?\s*', ''
+    $env:SSH_ORIGINAL_COMMAND = $null
+
+    # Re-invoke the bat file with arguments using cmd.exe
+    cmd /c "`"C:\Program Files\filerestore\filerestore.bat`" $arguments"
+    exit $LASTEXITCODE
+}
+
 function Show-Usage {
     Write-Host "Usage:"
     Write-Host "  filerestore.bat restore --serial <SERIAL> --mount-path <PATH> [--source-path <PATH>]"

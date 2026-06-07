@@ -16,6 +16,19 @@
 
 set -e
 
+# When invoked via SSH with command= restriction, validate and extract arguments
+if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
+    # Verify command starts with allowed script path
+    if [[ ! "$SSH_ORIGINAL_COMMAND" =~ ^/usr/local/bin/filerestore\.sh ]]; then
+        echo "ERROR: Only filerestore.sh commands are allowed" >&2
+        exit 1
+    fi
+    # Extract arguments from SSH_ORIGINAL_COMMAND and re-execute
+    # Use eval to properly parse the command line into arguments
+    eval "set -- ${SSH_ORIGINAL_COMMAND#/usr/local/bin/filerestore.sh}"
+    unset SSH_ORIGINAL_COMMAND  # Clear to prevent loops
+fi
+
 # Re-execute with sudo if not running as root (mount/umount require root)
 if [ "$EUID" -ne 0 ]; then
     exec sudo "$0" "$@"

@@ -87,16 +87,18 @@ if (Test-Path $AuthKeysPath) {
     }
 }
 
-# Add public key if it doesn't exist
+# Add public key if it doesn't exist (with command restriction)
 if (-not $keyExists) {
+    $RestrictedKey = 'command="C:\Program Files\filerestore\filerestore.bat" ' + $PubKey
+
     if (Test-Path $AuthKeysPath) {
         # Append to existing file
-        Add-Content -Path $AuthKeysPath -Value $PubKey -Encoding ASCII
-        Write-Host "  Key added to existing authorized_keys"
+        Add-Content -Path $AuthKeysPath -Value $RestrictedKey -Encoding ASCII
+        Write-Host "  Key added to existing authorized_keys (command-restricted)"
     } else {
         # Create new file
-        Set-Content -Path $AuthKeysPath -Value $PubKey -Encoding ASCII
-        Write-Host "  Key installed in new authorized_keys"
+        Set-Content -Path $AuthKeysPath -Value $RestrictedKey -Encoding ASCII
+        Write-Host "  Key installed in new authorized_keys (command-restricted)"
     }
 
     # Set correct permissions (only SYSTEM and Administrators)

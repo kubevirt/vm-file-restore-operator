@@ -62,17 +62,19 @@ echo "Setting up SSH directory..."
 mkdir -p ~filerestore/.ssh
 chmod 700 ~filerestore/.ssh
 
-# Add public key
+# Add public key with command restriction
 echo "Installing SSH public key..."
+linuxHelperScript="/usr/local/bin/filerestore.sh"
+RESTRICTED_KEY="command=\"$linuxHelperScript\" $PUB_KEY"
 if [ -f ~filerestore/.ssh/authorized_keys ] && grep -qF "$PUB_KEY" ~filerestore/.ssh/authorized_keys; then
     echo "  Key already exists, skipping"
 else
     if [ -f ~filerestore/.ssh/authorized_keys ]; then
-        echo "$PUB_KEY" >> ~filerestore/.ssh/authorized_keys
-        echo "  Key added to existing authorized_keys"
+        echo "$RESTRICTED_KEY" >> ~filerestore/.ssh/authorized_keys
+        echo "  Key added to existing authorized_keys (command-restricted)"
     else
-        echo "$PUB_KEY" > ~filerestore/.ssh/authorized_keys
-        echo "  Key installed in new authorized_keys"
+        echo "$RESTRICTED_KEY" > ~filerestore/.ssh/authorized_keys
+        echo "  Key installed in new authorized_keys (command-restricted)"
     fi
 fi
 chmod 600 ~filerestore/.ssh/authorized_keys
