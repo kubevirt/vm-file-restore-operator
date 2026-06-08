@@ -1,0 +1,184 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'releases/**'
+  pull_request:
+    # Run on PRs to any branch
+    types: [opened, synchronize, reopened]
+
+jobs:
+  # Check if this is an operator code change or just workflow setup
+  check-code:
+    name: Check for Go code
+    runs-on: ubuntu-latest
+    outputs:
+      has-code: ${{ steps.check.outputs.has-code }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check if go.mod exists
+        id: check
+        run: |
+          if [ -f "go.mod" ]; then
+            echo "has-code=true" >> $GITHUB_OUTPUT
+          else
+            echo "has-code=false" >> $GITHUB_OUTPUT
+          fi
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: check-code
+    if: needs.check-code.outputs.has-code == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.12.2
+          args: --timeout=10m
+
+  unit-test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: check-code
+    if: needs.check-code.outputs.has-code == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Run unit tests
+        run: |
+          make test
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./cover.out
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  e2e-test:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    needs: check-code
+    if: needs.check-code.outputs.has-code == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Free Disk Space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Verify kind installation
+        run: kind version
+
+      - name: Run e2e tests
+        run: |
+          make test-e2e
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: check-code
+    if: needs.check-code.outputs.has-code == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Build operator binary
+        run: |
+          make build
+
+      - name: Build Docker image
+        run: |
+          make docker-build IMG=vm-file-restore-operator:test
+
+  verify-manifests:
+    name: Verify Manifests
+    runs-on: ubuntu-latest
+    needs: check-code
+    if: needs.check-code.outputs.has-code == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Verify generated manifests are up to date
+        run: |
+          make manifests
+          git diff --exit-code config/
+          if [ $? -ne 0 ]; then
+            echo "Generated manifests are out of date. Please run 'make manifests' and commit the changes."
+            exit 1
+          fi
+
+  verify-bundle:
+    name: Verify Bundle
+    runs-on: ubuntu-latest
+    needs: check-code
+    if: needs.check-code.outputs.has-code == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Verify bundle is up to date
+        run: |
+          make bundle
+          git diff --exit-code bundle/
+          if [ $? -ne 0 ]; then
+            echo "Bundle is out of date. Please run 'make bundle' and commit the changes."
+            exit 1
+          fi
