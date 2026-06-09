@@ -1,0 +1,183 @@
+# CodeRabbit Configuration
+# Full reference: https://docs.coderabbit.ai/reference/configuration
+
+# ---------------------------------------------------------------------------
+# General
+# ---------------------------------------------------------------------------
+language: en-US
+tone_instructions: "Act as senior engineer: professional, constructive feedback only. Serious about file restore safety, VM interaction security, and test coverage. Flag issues with file/line references. End positively."
+early_access: false
+enable_free_tier: true
+
+# ---------------------------------------------------------------------------
+# Reviews > General
+# ---------------------------------------------------------------------------
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: false
+  high_level_summary_in_walkthrough: false
+  auto_title_placeholder: ""
+  review_status: false
+  review_details: false
+  commit_status: false
+  fail_commit_status: false
+  collapse_walkthrough: true
+  changed_files_summary: false
+  sequence_diagrams: false
+  estimate_code_review_effort: true
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  suggested_labels: false
+  auto_apply_labels: false
+  suggested_reviewers: false
+  auto_assign_reviewers: false
+  in_progress_fortune: false
+  poem: false
+  enable_prompt_for_ai_agents: true
+  path_filters:
+    - "!**/zz_generated.*"
+    - "!**/vendor/**"
+    - "!**/dist/**"
+  path_instructions:
+    - path: "**/*.go"
+      instructions: |
+        Review Go code with emphasis on:
+        - **Clarity and Simplicity**: Write idiomatic Go. Code should be self-documenting.
+        - **Concurrency**: Ensure goroutine safety. Avoid race conditions.
+        - **Error Handling**: No silent failures. Wrap errors with context using `errors.Is` and `errors.As`.
+        - **Resource Management**: Prevent leaks. Defer cleanup immediately after allocation.
+        - **Security**: Validate inputs, sanitize data, never hardcode secrets. Critical for SSH and VM operations.
+        - **Test Coverage**: Ensure unit tests exist for new code.
+    - path: "**/*controller*/**/*.go"
+      instructions: |
+        Controller code review focus:
+        - **Reconciliation**: Idempotent logic, proper status updates, condition handling.
+        - **Transient Errors**: Use TransientError type for retryable failures.
+        - **Finalizers**: Ensure cleanup logic is bulletproof and doesn't block forever.
+        - **Resource Ownership**: Proper owner references and garbage collection.
+    - path: "**/*_test.go"
+      instructions: |
+        Test code review focus:
+        - **Coverage**: High coverage on critical paths (SSH, file operations, state transitions).
+        - **Isolation**: Use mocks/fakes. No external dependencies unless integration test.
+        - **Table-Driven**: Use table-driven tests for multiple cases.
+        - **Clarity**: Test names clearly state intent. Good failure messages.
+        - **Cleanup**: Properly release resources after test completes.
+    - path: "api/**"
+      instructions: |
+        API definition review focus:
+        - **Backward Compatibility**: Never break existing API contracts.
+        - **Validation**: Proper kubebuilder markers for field validation.
+        - **Documentation**: Clear godoc for all types and fields.
+        - **Status Conditions**: Follow Kubernetes conventions for condition types.
+  abort_on_close: true
+  disable_cache: false
+  slop_detection:
+    enabled: false
+
+  # ---------------------------------------------------------------------------
+  # Reviews > Auto Review
+  # ---------------------------------------------------------------------------
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    auto_pause_after_reviewed_commits: 10
+    ignore_title_keywords:
+      - "WIP"
+    labels:
+      - "!do-not-merge/work-in-progress"
+    drafts: false
+    ignore_usernames:
+      - "renovate[bot]"
+      - "dependabot[bot]"
+
+  # ---------------------------------------------------------------------------
+  # Reviews > Finishing Touches
+  # ---------------------------------------------------------------------------
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+
+  # ---------------------------------------------------------------------------
+  # Reviews > Pre-merge Checks
+  # ---------------------------------------------------------------------------
+  pre_merge_checks:
+    override_requested_reviewers_only: false
+    docstrings:
+      mode: "off"
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+    issue_assessment:
+      mode: "off"
+
+  # ---------------------------------------------------------------------------
+  # Review Tools: all enabled by default (golangci-lint, yamllint, shellcheck, markdownlint, gitleaks, etc.)
+  # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Chat
+# ---------------------------------------------------------------------------
+chat:
+  art: true
+  allow_non_org_members: true
+  auto_reply: true
+  integrations:
+    jira:
+      usage: disabled
+    linear:
+      usage: disabled
+
+# ---------------------------------------------------------------------------
+# Knowledge Base
+# ---------------------------------------------------------------------------
+knowledge_base:
+  opt_out: false
+  web_search:
+    enabled: true
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "CONTRIBUTING.md"
+  learnings:
+    scope: global
+  issues:
+    scope: global
+  jira:
+    usage: disabled
+  linear:
+    usage: disabled
+  pull_requests:
+    scope: global
+  mcp:
+    usage: disabled
+  # Linked repositories — KubeVirt ecosystem context
+  linked_repositories:
+    - repository: "kubevirt/kubevirt"
+      instructions: "Core virtualization platform. Use to verify VirtualMachine and VirtualMachineInstance API usage, subresource endpoints, and expected behavior."
+    - repository: "kubevirt/containerized-data-importer"
+      instructions: "CDI operator. Use to understand DataVolume patterns and disk attachment behavior."
+    - repository: "kubevirt/hyperconverged-cluster-operator"
+      instructions: "HCO meta-operator. Reference for operator patterns, upgrade handling, and multi-component management."
+    - repository: "kubevirt/monitoring"
+      instructions: "Monitoring and alerting patterns. Reference for metrics and alert definitions."
+
+# ---------------------------------------------------------------------------
+# Issue Enrichment
+# ---------------------------------------------------------------------------
+issue_enrichment:
+  auto_enrich:
+    enabled: false
+  planning:
+    enabled: false
+    auto_planning:
+      enabled: false
+  labeling:
+    auto_apply_labels: false
