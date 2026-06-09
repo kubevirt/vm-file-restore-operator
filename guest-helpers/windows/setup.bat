@@ -159,7 +159,7 @@ try {
 
 # Download and install helper script
 Write-Host "Installing filerestore.bat helper script..."
-$scriptUrl = "https://raw.githubusercontent.com/arnongilboa/vm-file-restore-operator/refs/heads/add-initial-operator/guest-helpers/windows/filerestore.bat"
+$scriptUrl = "https://raw.githubusercontent.com/kubevirt/vm-file-restore-operator/refs/heads/main/guest-helpers/windows/filerestore.bat"
 $scriptPath = "C:\Program Files\filerestore\filerestore.bat"
 
 # Create directory

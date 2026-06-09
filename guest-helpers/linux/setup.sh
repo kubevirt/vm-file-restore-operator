@@ -96,7 +96,7 @@ echo "  Sudoers configured: /etc/sudoers.d/filerestore"
 
 # Download and install helper script
 echo "Installing filerestore.sh helper script..."
-SCRIPT_URL="https://raw.githubusercontent.com/arnongilboa/vm-file-restore-operator/refs/heads/add-initial-operator/guest-helpers/linux/filerestore.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/kubevirt/vm-file-restore-operator/refs/heads/main/guest-helpers/linux/filerestore.sh"
 
 if command -v curl >/dev/null 2>&1; then
     curl -sSL -o /usr/local/bin/filerestore.sh "$SCRIPT_URL"
