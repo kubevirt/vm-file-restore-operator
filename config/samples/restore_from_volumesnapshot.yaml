@@ -1,0 +1,18 @@
+# Directory restore from VolumeSnapshot
+apiVersion: filerestore.kubevirt.io/v1alpha1
+kind: VirtualMachineFileRestore
+metadata:
+  labels:
+    app.kubernetes.io/name: vm-file-restore-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: restore-from-snapshot-sample
+  namespace: default
+spec:
+  target:
+    apiGroup: kubevirt.io
+    kind: VirtualMachine
+    name: fedora
+  source:
+    snapshot:
+      name: snap1
+  sourcePath: /home/donald

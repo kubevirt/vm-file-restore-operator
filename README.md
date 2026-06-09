@@ -12,13 +12,47 @@ The VM File Restore Operator provides a declarative way to restore individual fi
 
 This operator simplifies disaster recovery and file-level backup scenarios for virtualized workloads running on KubeVirt, enabling granular restore operations without needing to restore entire VM disk images.
 
+## Features
+
+- **Declarative File Restore**: Use Kubernetes CRs to restore files to running VMs
+- **Multiple Source Types**: Restore from PVCs, VolumeSnapshots, or remote storage
+- **Automatic and Manual Modes**: Automatic restore with specified paths, or manual mode for interactive restore
+- **Hot-plug Technology**: No VM restart required - volumes are hot-plugged at runtime
+- **Guest OS Auto-Detection**: Automatically detects Linux/Windows and adjusts mount paths
+- **SSH-Based Execution**: Secure SSH access for executing restore commands in guest OS
+- **Robust Error Handling**: Automatic retries, timeouts, and detailed error reporting
+- **Idempotent Operations**: Safe to retry, handles partial failures gracefully
+
+## Architecture
+
+The operator uses a 9-phase state machine:
+
+```
+New → Init → Hotplugging → WaitingForAttachment → SSHConnecting → 
+  Restoring → Cleanup → Succeeded
+                    ↓
+                  Failed
+```
+
+**How it works:**
+1. **Init**: Validates target VM is running and source exists
+2. **Hotplugging**: Modifies VM spec to add restore volume (hot-plug)
+3. **WaitingForAttachment**: Waits for KubeVirt to attach volume to VMI
+4. **SSHConnecting**: Establishes SSH connection to VM guest OS
+5. **Restoring**: Executes helper script to mount and restore files
+6. **Cleanup**: Unplugs volume from VM, deletes temporary PVCs
+7. **Succeeded/Failed**: Terminal state with completion time
+
+**Special Mode:**
+- **VolumeReady**: Manual restore mode - volume stays attached until CR deletion
+
 ## Getting Started
 
 ### Prerequisites
-- go version v1.24.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+- go version v1.25.0+
+- docker version 17.03+
+- kubectl version v1.11.3+
+- Access to a Kubernetes v1.11.3+ cluster with KubeVirt installed
 
 ### To Deploy on the cluster
 **Build and push your image to the location specified by `IMG`:**
@@ -55,6 +89,139 @@ kubectl apply -k config/samples/
 
 >**NOTE**: Ensure that the samples has default values to test it out.
 
+## SSH Setup for File Restore
+
+The operator requires SSH access to VMs to execute restore operations. The operator connects as user **`filerestore`** on both Linux and Windows VMs.
+
+### 1. Get the Operator's SSH Public Key
+
+After deploying the operator, retrieve the public key:
+
+```bash
+kubectl get configmap vm-file-restore-operator-ssh \
+  -n file-restore \
+  -o jsonpath='{.data.ssh-publickey}'
+```
+
+### 2. Create `filerestore` User and Add SSH Key
+
+**For Linux VMs:**
+```bash
+# 1. Create filerestore user
+sudo useradd -m -s /bin/bash filerestore
+
+# 2. Grant sudo access (required - the helper script needs root to mount volumes)
+sudo usermod -aG sudo filerestore  # Debian/Ubuntu
+# OR
+sudo usermod -aG wheel filerestore  # RHEL/Fedora/CentOS
+
+# Configure passwordless sudo (the script re-executes itself with sudo if needed)
+echo "filerestore ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/filerestore
+sudo chmod 440 /etc/sudoers.d/filerestore
+
+# 3. Create SSH directory
+sudo mkdir -p /home/filerestore/.ssh
+sudo chmod 700 /home/filerestore/.ssh
+
+# 4. Add operator's public key
+# First, get the key:
+kubectl get configmap vm-file-restore-operator-ssh -n file-restore \
+  -o jsonpath='{.data.ssh-publickey}'
+
+# Then add it to authorized_keys (copy-paste the output above):
+echo "<paste-public-key-here>" | sudo tee /home/filerestore/.ssh/authorized_keys
+
+# 5. Fix permissions
+sudo chmod 600 /home/filerestore/.ssh/authorized_keys
+sudo chown -R filerestore:filerestore /home/filerestore/.ssh
+```
+
+**Security Hardening (Optional):**
+
+Once the helper script is installed, restrict sudo access to only that script:
+```bash
+# Replace the sudoers rule to allow only the restore script
+echo "filerestore ALL=(ALL) NOPASSWD: /usr/local/bin/filerestore.sh" | \
+  sudo tee /etc/sudoers.d/filerestore
+```
+
+**For Windows VMs:**
+
+Step 1 - Get the public key on your host:
+```bash
+kubectl get configmap vm-file-restore-operator-ssh -n file-restore \
+  -o jsonpath='{.data.ssh-publickey}' > /tmp/vm-restore-key.pub
+```
+
+Step 2 - Access the Windows VM and run these commands:
+```powershell
+# Use virtctl console or RDP to access the Windows VM
+
+# 1. Create filerestore user (set a password)
+net user filerestore <password> /add
+net localgroup Administrators filerestore /add
+
+# 2. Create SSH directory
+mkdir C:\Users\filerestore\.ssh
+
+# 3. Add operator's public key
+# Copy the content from /tmp/vm-restore-key.pub and paste it:
+echo "ssh-ed25519 AAAA...xyz vm-file-restore-operator" | `
+  Out-File -FilePath C:\Users\filerestore\.ssh\authorized_keys -Encoding ASCII
+
+# 4. Ensure OpenSSH Server is running
+Get-Service sshd | Start-Service
+Set-Service -Name sshd -StartupType Automatic
+```
+
+Alternatively, use `virtctl scp` to copy the key file directly:
+```bash
+virtctl scp /tmp/vm-restore-key.pub filerestore@<vm-name>:C:/Users/filerestore/.ssh/authorized_keys
+```
+
+**Test SSH Access:**
+
+Option 1 - Using virtctl (recommended):
+```bash
+# Access VM console and verify filerestore user exists
+virtctl console <vm-name>
+
+# Login and check authorized_keys
+su - filerestore
+cat ~/.ssh/authorized_keys  # Should contain operator's public key
+```
+
+Option 2 - Direct SSH (requires cluster admin access to read Secret):
+```bash
+# Only works if you have permissions to read Secrets in file-restore namespace
+kubectl get vmi <vm-name> -o jsonpath='{.status.interfaces[0].ipAddress}'
+# Then use the private key from the Secret (cluster-admin only)
+```
+
+### 3. Install Helper Scripts in VMs
+
+The operator requires helper scripts installed in VMs:
+
+**Linux:** `/usr/local/bin/filerestore.sh`  
+**Windows:** `C:\Program Files\filerestore\filerestore.bat`
+
+See `docs/` for helper script installation instructions.
+
+### 4. Create a Restore
+
+Once SSH is configured and helpers are installed, create a restore:
+
+```bash
+kubectl apply -f config/samples/restore_v1alpha1_virtualmachinefilerestore.yaml
+```
+
+Monitor progress:
+
+```bash
+kubectl get vmfr -w
+kubectl describe vmfr <restore-name>
+```
+
 ## Usage
 
 ### VirtualMachineFileRestore API
@@ -72,7 +239,7 @@ The `VirtualMachineFileRestore` CRD allows you to specify:
 #### Restore from PVC
 
 ```yaml
-apiVersion: restore.kubevirt.io/v1alpha1
+apiVersion: filerestore.kubevirt.io/v1alpha1
 kind: VirtualMachineFileRestore
 metadata:
   name: restore-from-pvc
@@ -91,7 +258,7 @@ spec:
 #### Restore from VolumeSnapshot
 
 ```yaml
-apiVersion: restore.kubevirt.io/v1alpha1
+apiVersion: filerestore.kubevirt.io/v1alpha1
 kind: VirtualMachineFileRestore
 metadata:
   name: restore-from-snapshot
@@ -108,7 +275,7 @@ spec:
 #### Restore from Remote Backup
 
 ```yaml
-apiVersion: restore.kubevirt.io/v1alpha1
+apiVersion: filerestore.kubevirt.io/v1alpha1
 kind: VirtualMachineFileRestore
 metadata:
   name: restore-from-remote
@@ -123,6 +290,34 @@ spec:
     - /opt/application/data
 ```
 
+**Note:** Remote sources are planned but not yet implemented.
+
+#### Manual Restore Mode
+
+Omit `sourcePath` to hotplug the volume without automatic restore. The volume stays attached in `VolumeReady` phase until you delete the CR:
+
+```yaml
+apiVersion: filerestore.kubevirt.io/v1alpha1
+kind: VirtualMachineFileRestore
+metadata:
+  name: manual-restore
+spec:
+  target:
+    apiGroup: kubevirt.io
+    kind: VirtualMachine
+    name: fedora
+  source:
+    snapshot:
+      name: snap1
+  # No sourcePath - manual mode
+```
+
+In manual mode:
+1. Volume is hotplugged and mounted at `/backup` (Linux) or `C:\backup` (Windows)
+2. CR stays in `VolumeReady` phase
+3. SSH into VM and manually copy files
+4. Delete CR to unplug volume and clean up
+
 ### Check Restore Status
 
 ```sh
@@ -130,7 +325,33 @@ kubectl get vmfr
 kubectl describe vmfr restore-from-pvc
 ```
 
-The status will show the current phase (New, InProgress, Succeeded, Failed) and the number of files restored.
+The status shows the current phase and progress:
+
+**Phases:**
+- `New` - CR created, not yet started
+- `Init` - Validating target VM and source
+- `Hotplugging` - Attaching restore volume to VM
+- `WaitingForAttachment` - Waiting for volume to attach (max 5 minutes)
+- `SSHConnecting` - Establishing SSH connection (max 2 minutes with retry)
+- `Restoring` - Executing file restore command
+- `VolumeReady` - Manual restore mode (sourcePath empty), volume is mounted
+- `Cleanup` - Unplugging volume and cleaning up
+- `Succeeded` - Restore completed successfully
+- `Failed` - Restore failed (see errorMessage for details)
+
+**Status Fields:**
+- `phase` - Current phase of the restore
+- `startTime` - When the restore started
+- `completionTime` - When the restore completed
+- `restoredFilesCount` - Number of files restored
+- `mountPath` - Where the volume is mounted in guest OS
+- `errorMessage` - Details if restore failed
+- `conditions` - Additional status information
+
+**Timeouts and Retries:**
+- Volume attachment: 5-minute timeout with exponential backoff
+- SSH connection: 2-minute timeout with retry
+- All operations are idempotent and safe to retry
 
 ### To Uninstall
 **Delete the instances (CRs) from the cluster:**
