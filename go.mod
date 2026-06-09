@@ -1,6 +1,6 @@
 module kubevirt.io/vm-file-restore-operator
 
-go 1.25.0
+go 1.25.9
 
 require (
 	github.com/onsi/ginkgo/v2 v2.22.0
