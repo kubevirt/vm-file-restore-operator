@@ -345,6 +345,65 @@ the '--force' flag and manually ensure that any custom configuration
 previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
 is manually re-applied afterwards.
 
+## Development
+
+### Running Tests
+
+**Unit tests:**
+```bash
+make test
+```
+
+**E2E tests:**
+
+E2E tests use kubevirtci to provision an ephemeral Kubernetes cluster with KubeVirt pre-installed.
+
+1. Start a kubevirtci cluster:
+```bash
+make cluster-up
+```
+
+2. Deploy the operator to the cluster:
+```bash
+make cluster-sync
+```
+
+3. Run e2e tests:
+```bash
+make test-e2e
+```
+
+4. Clean up the cluster when done:
+```bash
+make cluster-down
+```
+
+**Environment variables:**
+- `KUBEVIRT_PROVIDER`: Kubernetes version (default: `k8s-1.35`)
+- `KUBEVIRTCI_VERSION`: kubevirtci version (default: `2603261733-5efa6c07`)
+- `IMAGE_REGISTRY`: Container registry (default: `quay.io`)
+- `REGISTRY_NAMESPACE`: Registry namespace (default: `kubevirt`)
+
+**Using an existing kubevirtci cluster:**
+
+If you already have a kubevirtci cluster running, you can skip `cluster-up` and run tests directly:
+```bash
+export KUBECONFIG=$(./cluster/kubevirtci.sh && kubevirtci::kubeconfig)
+make test-e2e
+```
+
+### Linting
+
+Run golangci-lint:
+```bash
+make lint
+```
+
+Fix linting issues automatically:
+```bash
+make lint-fix
+```
+
 ## Contributing
 // TODO(user): Add detailed information on how you would like others to contribute to this project
 
