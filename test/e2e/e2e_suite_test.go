@@ -28,62 +28,33 @@ import (
 	"kubevirt.io/vm-file-restore-operator/test/utils"
 )
 
-var (
-	// Optional Environment Variables:
-	// - CERT_MANAGER_INSTALL_SKIP=true: Skips CertManager installation during test setup.
-	// These variables are useful if CertManager is already installed, avoiding
-	// re-installation and conflicts.
-	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
-	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
-	isCertManagerAlreadyInstalled = false
-
-	// projectImage is the name of the image which will be build and loaded
-	// with the code source changes to be tested.
-	projectImage = "example.com/vm-file-restore-operator:v0.0.1"
-)
-
-// TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
-// temporary environment to validate project changes with the purposed to be used in CI jobs.
-// The default setup requires Kind, builds/loads the Manager Docker image locally, and installs
-// CertManager.
+// TestE2E runs the end-to-end (e2e) test suite for the project.
+// These tests run against a kubevirtci cluster with the operator already deployed.
+// Prerequisites:
+//   - kubevirtci cluster running (make cluster-up)
+//   - Operator deployed (make cluster-sync)
+//   - KUBECONFIG pointing to the cluster
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting vm-file-restore-operator integration test suite\n")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Starting vm-file-restore-operator e2e test suite\n")
 	RunSpecs(t, "e2e suite")
 }
 
 var _ = BeforeSuite(func() {
-	By("building the manager(Operator) image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
+	// E2E tests assume the operator is already deployed to the kubevirtci cluster.
+	// Use 'make cluster-sync' to build and deploy the operator before running tests.
+
+	By("verifying KUBECONFIG is set")
+	kubeconfig := os.Getenv("KUBECONFIG")
+	Expect(kubeconfig).NotTo(BeEmpty(), "KUBECONFIG must be set to point to kubevirtci cluster")
+	_, _ = fmt.Fprintf(GinkgoWriter, "Using KUBECONFIG: %s\n", kubeconfig)
+
+	By("verifying operator is deployed")
+	cmd := exec.Command("kubectl", "get", "deployment", "-n", "file-restore", "vm-file-restore-operator")
 	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
-
-	// TODO(user): If you want to change the e2e test vendor from Kind, ensure the image is
-	// built and available before running the tests. Also, remove the following block.
-	By("loading the manager(Operator) image on Kind")
-	err = utils.LoadImageToKindClusterWithName(projectImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager(Operator) image into Kind")
-
-	// The tests-e2e are intended to run on a temporary cluster that is created and destroyed for testing.
-	// To prevent errors when tests run in environments with CertManager already installed,
-	// we check for its presence before execution.
-	// Setup CertManager before the suite if not skipped and if not already installed
-	if !skipCertManagerInstall {
-		By("checking if cert manager is installed already")
-		isCertManagerAlreadyInstalled = utils.IsCertManagerCRDsInstalled()
-		if !isCertManagerAlreadyInstalled {
-			_, _ = fmt.Fprintf(GinkgoWriter, "Installing CertManager...\n")
-			Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install CertManager")
-		} else {
-			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
-		}
-	}
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Operator deployment not found. Run 'make cluster-sync' to deploy the operator first.")
 })
 
 var _ = AfterSuite(func() {
-	// Teardown CertManager after the suite if not skipped and if it was not already installed
-	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
-		utils.UninstallCertManager()
-	}
+	// Nothing to clean up - operator stays running for debugging
 })
