@@ -119,17 +119,11 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 
 # E2E tests use kubevirtci for ephemeral KubeVirt clusters
 # See: https://github.com/kubevirt/kubevirtci
-
-.PHONY: cluster-up
-cluster-up: ## Start a kubevirtci cluster with KubeVirt
-	./cluster/up.sh
-
-.PHONY: cluster-down
-cluster-down: ## Stop the kubevirtci cluster
-	./cluster/down.sh
+# Note: You must manage kubevirtci yourself (cluster up/down)
+# This Makefile only provides deployment helpers
 
 .PHONY: cluster-sync
-cluster-sync: ## Deploy the operator to the kubevirtci cluster
+cluster-sync: ## Deploy the operator to kubevirtci cluster
 	./cluster/sync.sh
 
 .PHONY: test-e2e

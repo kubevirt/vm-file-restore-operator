@@ -356,33 +356,17 @@ make test
 
 **E2E tests:**
 
-E2E tests use kubevirtci to provision an ephemeral Kubernetes cluster with KubeVirt pre-installed.
+Prerequisites:
+- kubevirtci cluster running (see [kubevirtci docs](https://github.com/kubevirt/kubevirtci))
+- KUBECONFIG pointing to the cluster
 
-1. Start a kubevirtci cluster:
 ```bash
-make cluster-up
-```
-
-2. Deploy the operator to the cluster:
-```bash
+# Deploy operator to your running kubevirtci cluster
 make cluster-sync
-```
 
-3. Run e2e tests:
-```bash
+# Run e2e tests
 make test-e2e
 ```
-
-4. Clean up the cluster when done:
-```bash
-make cluster-down
-```
-
-**Environment variables:**
-- `KUBEVIRT_PROVIDER`: Kubernetes version (default: `k8s-1.35`)
-- `KUBEVIRTCI_VERSION`: kubevirtci version (default: `2603261733-5efa6c07`)
-- `IMAGE_REGISTRY`: Container registry (default: `quay.io`)
-- `REGISTRY_NAMESPACE`: Registry namespace (default: `kubevirt`)
 
 **Using an existing kubevirtci cluster:**
 
