@@ -28,3 +28,6 @@ dist/
 *.swp
 *.swo
 *~
+
+# Kustomize modifies this file when building (kustomize edit set image)
+config/manager/kustomization.yaml
