@@ -52,7 +52,8 @@ var _ = BeforeSuite(func() {
 	By("verifying operator is deployed")
 	cmd := exec.Command("kubectl", "get", "deployment", "-n", "file-restore", "vm-file-restore-operator")
 	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Operator deployment not found. Run 'make cluster-sync' to deploy the operator first.")
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(),
+		"Operator deployment not found. Run 'make cluster-sync' to deploy the operator first.")
 })
 
 var _ = AfterSuite(func() {
