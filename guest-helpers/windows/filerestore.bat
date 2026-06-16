@@ -49,6 +49,12 @@ function Show-Usage {
     exit 1
 }
 
+# Wrapper functions for native executables (enables Pester mocking)
+function New-Junction { param([string]$Path, [string]$Target) cmd /c mklink /J "$Path" "$Target" | Out-Null }
+function Remove-Junction { param([string]$Path) cmd /c rmdir "$Path" 2>$null }
+function Invoke-Robocopy { param([string[]]$Arguments) & robocopy @Arguments; return $LASTEXITCODE }
+function Read-FileContent { param([string]$Path) return (Get-Content -Path $Path -Raw).Trim() }
+
 # Unmount-AndCleanup resolves the junction target to find the disk, sets the
 # disk offline, and removes the junction point.
 function Unmount-AndCleanup {
@@ -73,7 +79,7 @@ function Unmount-AndCleanup {
 
     # Remove the junction link (rmdir removes the reparse point without following it)
     if (Test-Path $MountPath) {
-        cmd /c rmdir "$MountPath" 2>$null
+        Remove-Junction -Path $MountPath
     }
     if (Test-Path $MountPath) {
         Write-Host "WARNING: Could not remove junction $MountPath"
@@ -84,6 +90,9 @@ function Unmount-AndCleanup {
         Set-Disk -Number $DiskNumber -IsOffline $true -ErrorAction SilentlyContinue
     }
 }
+
+# Allow importing for unit tests without executing main logic
+if ($env:FILERESTORE_TEST_MODE -eq '1') { return }
 
 # --- Parse arguments ---
 if ($args.Count -lt 1) { Show-Usage }
@@ -184,15 +193,15 @@ if (-not $driveLetter) {
 # --- Unlock BitLocker volume (must use the real drive letter, not a junction) ---
 $BitLockerPasswordFile = "C:\Program Files\filerestore\lockfile.txt"
 if (Test-Path $BitLockerPasswordFile) {
-    $recoveryPassword = (Get-Content -Path $BitLockerPasswordFile -Raw).Trim()
+    $recoveryPassword = Read-FileContent -Path $BitLockerPasswordFile
     Write-Host "Unlocking BitLocker volume at ${driveLetter}: ..."
     Unlock-BitLocker -MountPoint "${driveLetter}:" -RecoveryPassword $recoveryPassword
     Write-Host "BitLocker volume unlocked"
 }
 
 # Create a junction point to redirect $MountPath to the drive
-if (Test-Path $MountPath) { cmd /c rmdir "$MountPath" 2>$null }
-cmd /c mklink /J "$MountPath" "${driveLetter}:\" | Out-Null
+if (Test-Path $MountPath) { Remove-Junction -Path $MountPath }
+New-Junction -Path $MountPath -Target "${driveLetter}:\"
 if (-not (Test-Path $MountPath)) {
     Write-Host "ERROR: Failed to create junction from $MountPath to ${driveLetter}:\"
     exit 1
@@ -227,15 +236,15 @@ try {
         $fileName = Split-Path $BackupPath -Leaf
         $destDir = Split-Path $SourcePath -Parent
         New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-        robocopy "$srcDir" "$destDir" "$fileName" /COPY:DATS /R:1 /W:1
+        $rcExit = Invoke-Robocopy -Arguments @("$srcDir", "$destDir", "$fileName", '/COPY:DATS', '/R:1', '/W:1')
     } else {
         New-Item -ItemType Directory -Path $SourcePath -Force | Out-Null
-        robocopy "$BackupPath" "$SourcePath" /E /COPY:DATS /R:1 /W:1
+        $rcExit = Invoke-Robocopy -Arguments @("$BackupPath", "$SourcePath", '/E', '/COPY:DATS', '/R:1', '/W:1')
     }
 
     # robocopy exit codes: 0-7 are success (bits indicate copied/extra/mismatched files), 8+ are errors
-    if ($LASTEXITCODE -ge 8) {
-        Write-Host "ERROR: File copy failed with robocopy exit code $LASTEXITCODE"
+    if ($rcExit -ge 8) {
+        Write-Host "ERROR: File copy failed with robocopy exit code $rcExit"
         $copyFailed = $true
     }
 } finally {
