@@ -1,0 +1,10 @@
+#!/bin/bash
+echo "lsblk $*" >> "$MOCK_CALL_LOG"
+if [[ "$*" == *"NAME,SERIAL"* ]]; then
+    echo "${MOCK_LSBLK_SERIAL_OUTPUT:-}"
+elif [[ "$*" == *"NAME,FSTYPE"* ]]; then
+    echo "${MOCK_LSBLK_FSTYPE_OUTPUT:-}"
+else
+    echo "${MOCK_LSBLK_OUTPUT:-}"
+fi
+exit "${MOCK_LSBLK_EXIT:-0}"

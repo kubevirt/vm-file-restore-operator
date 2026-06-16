@@ -132,6 +132,45 @@ test-e2e: manifests generate fmt vet ## Run e2e tests (requires kubevirtci clust
 	@echo "NOTE: Ensure kubevirtci cluster is running with 'make cluster-up'"
 	go test ./test/e2e/ -v -ginkgo.v -timeout=30m
 
+##@ Script Tests
+
+CONTAINER_ENGINE ?= $(CONTAINER_TOOL)
+PWSH_IMAGE ?= mcr.microsoft.com/powershell:latest
+BATS_IMAGE ?= alpine:latest
+
+.PHONY: test-scripts
+test-scripts: test-scripts-linux test-scripts-windows ## Run all guest-helper script tests
+
+.PHONY: test-scripts-linux
+test-scripts-linux: ## Run BATS tests for Linux guest helper (containerized)
+	$(CONTAINER_ENGINE) run --rm \
+		-v $(shell pwd):/workspace:Z \
+		-w /workspace \
+		$(BATS_IMAGE) \
+		sh -c " \
+			apk add --no-cache bash git >/dev/null 2>&1 && \
+			git clone --depth 1 -q https://github.com/bats-core/bats-core.git /tmp/bats && \
+			git clone --depth 1 -q https://github.com/bats-core/bats-support.git /tmp/bats-support && \
+			git clone --depth 1 -q https://github.com/bats-core/bats-assert.git /tmp/bats-assert && \
+			BATS_SUPPORT_HOME=/tmp/bats-support BATS_ASSERT_HOME=/tmp/bats-assert \
+			/tmp/bats/bin/bats guest-helpers/linux/test/filerestore.bats"
+
+.PHONY: test-scripts-windows
+test-scripts-windows: ## Run Pester tests for Windows guest helper (containerized)
+	$(CONTAINER_ENGINE) run --rm \
+		-v $(shell pwd):/workspace:Z \
+		-w /workspace \
+		$(PWSH_IMAGE) \
+		pwsh -NoProfile -Command " \
+			Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser; \
+			Invoke-Pester -Path 'guest-helpers/windows/test/' -Output Detailed -CI"
+
+.PHONY: shellcheck
+shellcheck: ## Run shellcheck on guest helper scripts
+	shellcheck guest-helpers/linux/filerestore.sh guest-helpers/linux/setup.sh
+
+##@ Linting
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run
