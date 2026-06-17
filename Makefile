@@ -135,8 +135,12 @@ test-e2e: manifests generate fmt vet ## Run e2e tests (requires kubevirtci clust
 ##@ Script Tests
 
 CONTAINER_ENGINE ?= $(CONTAINER_TOOL)
-PWSH_IMAGE ?= mcr.microsoft.com/powershell:latest
-BATS_IMAGE ?= alpine:latest
+# mcr.microsoft.com/powershell is deprecated; the .NET SDK image is the
+# recommended replacement and includes pwsh.
+# https://learn.microsoft.com/en-us/powershell/scripting/install/powershell-in-docker
+PWSH_IMAGE ?= mcr.microsoft.com/dotnet/sdk:9.0
+BATS_IMAGE ?= bats/bats:1.13.0
+PESTER_VERSION ?= 5.7.1
 
 .PHONY: test-scripts
 test-scripts: test-scripts-linux test-scripts-windows ## Run all guest-helper script tests
@@ -147,13 +151,7 @@ test-scripts-linux: ## Run BATS tests for Linux guest helper (containerized)
 		-v $(shell pwd):/workspace:Z \
 		-w /workspace \
 		$(BATS_IMAGE) \
-		sh -c " \
-			apk add --no-cache bash git >/dev/null 2>&1 && \
-			git clone --depth 1 -q https://github.com/bats-core/bats-core.git /tmp/bats && \
-			git clone --depth 1 -q https://github.com/bats-core/bats-support.git /tmp/bats-support && \
-			git clone --depth 1 -q https://github.com/bats-core/bats-assert.git /tmp/bats-assert && \
-			BATS_SUPPORT_HOME=/tmp/bats-support BATS_ASSERT_HOME=/tmp/bats-assert \
-			/tmp/bats/bin/bats guest-helpers/linux/test/filerestore.bats"
+		guest-helpers/linux/test/filerestore.bats
 
 .PHONY: test-scripts-windows
 test-scripts-windows: ## Run Pester tests for Windows guest helper (containerized)
@@ -162,7 +160,7 @@ test-scripts-windows: ## Run Pester tests for Windows guest helper (containerize
 		-w /workspace \
 		$(PWSH_IMAGE) \
 		pwsh -NoProfile -Command " \
-			Install-Module Pester -Force -SkipPublisherCheck -Scope CurrentUser; \
+			Install-Module Pester -RequiredVersion $(PESTER_VERSION) -Force -SkipPublisherCheck -Scope CurrentUser; \
 			Invoke-Pester -Path 'guest-helpers/windows/test/' -Output Detailed -CI"
 
 .PHONY: shellcheck

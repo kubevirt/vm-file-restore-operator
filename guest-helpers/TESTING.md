@@ -25,11 +25,10 @@ CONTAINER_ENGINE=docker make test-scripts
 
 ## Prerequisites
 
-Only a container runtime (Docker or Podman) is needed. All test frameworks and
-dependencies are installed automatically inside the containers at runtime:
+Only a container runtime (Docker or Podman) is needed:
 
-- **Linux tests**: Alpine container with `bash`, `git`, [bats-core](https://github.com/bats-core/bats-core), [bats-support](https://github.com/bats-core/bats-support), [bats-assert](https://github.com/bats-core/bats-assert)
-- **Windows tests**: `mcr.microsoft.com/powershell` container with [Pester v5](https://pester.dev/)
+- **Linux tests**: [`bats/bats`](https://hub.docker.com/r/bats/bats) official image (includes [bats-core](https://github.com/bats-core/bats-core), [bats-support](https://github.com/bats-core/bats-support), [bats-assert](https://github.com/bats-core/bats-assert))
+- **Windows tests**: [`mcr.microsoft.com/dotnet/sdk`](https://learn.microsoft.com/en-us/powershell/scripting/install/powershell-in-docker) with [Pester v5](https://pester.dev/) installed at runtime (pinned version)
 
 No local installation of BATS, PowerShell, or Pester is required.
 
@@ -65,10 +64,11 @@ The production script is modified minimally for testability:
 
 ### Windows (Pester)
 
-The test helper extracts the PowerShell portion from the bat/PS polyglot file,
-patches `exit N` statements to `throw "EXIT:N"` (so Pester can catch exit
-codes), and strips wrapper function definitions so Pester can mock the global
-stubs instead.
+The test helper extracts the PowerShell portion from the bat/PS polyglot file
+by stripping the batch preamble (everything up to the closing `#>` block
+comment marker). The extracted script is dot-sourced with
+`FILERESTORE_TEST_MODE=1`, which loads all function definitions without
+executing the main entry point.
 
 Windows-only cmdlets (`Get-Disk`, `Set-Disk`, `Get-Partition`, etc.) are
 defined as stub functions with proper parameter declarations, enabling Pester's

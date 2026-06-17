@@ -5,7 +5,20 @@ $BatFile = Join-Path $PSScriptRoot '..' 'filerestore.bat'
 function Get-TestableScript {
     param([string]$OutputPath)
 
-    Copy-Item -Path $BatFile -Destination $OutputPath
+    $lines = Get-Content -Path $BatFile
+    # Strip the batch polyglot preamble (everything up to the closing #>)
+    $preambleEnd = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '#>\s*$') {
+            $preambleEnd = $i
+            break
+        }
+    }
+    if ($preambleEnd -lt 0) {
+        Copy-Item -Path $BatFile -Destination $OutputPath
+    } else {
+        $lines[($preambleEnd + 1)..($lines.Count - 1)] | Set-Content -Path $OutputPath
+    }
     return $OutputPath
 }
 

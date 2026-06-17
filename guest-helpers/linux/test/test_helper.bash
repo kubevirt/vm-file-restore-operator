@@ -4,8 +4,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCRIPT="$SCRIPT_DIR/filerestore.sh"
 
-load "${BATS_SUPPORT_HOME:-$BATS_TEST_DIRNAME/lib/bats-support}/load"
-load "${BATS_ASSERT_HOME:-$BATS_TEST_DIRNAME/lib/bats-assert}/load"
+bats_load_library bats-support
+bats_load_library bats-assert
 
 setup() {
     export FILERESTORE_SKIP_ROOT_CHECK=1
