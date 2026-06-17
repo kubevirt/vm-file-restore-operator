@@ -7,14 +7,12 @@ BeforeAll {
     $script:TestScript = Join-Path $TestDrive 'filerestore.ps1'
     Get-TestableScript -OutputPath $script:TestScript
 
-    # Helper: dot-source only the functions (test mode)
-    # The test-mode guard uses 'return' (unchanged by exit→throw patching)
-    $script:FuncScript = Join-Path $TestDrive 'filerestore_funcs.ps1'
-    $content = Get-Content -Path $script:TestScript -Raw
-    $content = $content -replace "if \(\`$env:FILERESTORE_TEST_MODE -eq '1'\) \{ return \}", 'return'
-    Set-Content -Path $script:FuncScript -Value $content -NoNewline
+    # Dot-source to load all functions (test-mode guard returns before main logic)
+    $env:FILERESTORE_TEST_MODE = '1'
+    . $script:TestScript
+    Remove-Item env:FILERESTORE_TEST_MODE
 
-    # Helper to run the script with arguments and capture exit code
+    # Helper to run the main entry point and capture exit code
     function script:Invoke-TestScript {
         param(
             [string[]]$Arguments = @(),
@@ -24,13 +22,7 @@ BeforeAll {
             foreach ($key in $Env.Keys) {
                 Set-Item "env:$key" $Env[$key]
             }
-            . $script:TestScript @Arguments
-            return @{ ExitCode = 0; Threw = $false }
-        } catch {
-            if ($_.Exception.Message -match '^EXIT:(.+)$') {
-                return @{ ExitCode = [int]$Matches[1]; Threw = $true }
-            }
-            throw
+            return @{ ExitCode = (Invoke-FileRestore $Arguments); Threw = $false }
         } finally {
             foreach ($key in $Env.Keys) {
                 Remove-Item "env:$key" -ErrorAction SilentlyContinue
@@ -43,27 +35,33 @@ BeforeAll {
 # SSH_ORIGINAL_COMMAND validation
 # =============================================================================
 Describe 'SSH command restriction' {
+    AfterEach {
+        Remove-Item env:SSH_ORIGINAL_COMMAND -ErrorAction SilentlyContinue
+    }
+
     It 'rejects disallowed command' {
         $env:SSH_ORIGINAL_COMMAND = 'C:\evil.exe restore'
-        try {
-            { . $script:TestScript } | Should -Throw 'EXIT:1'
-        } finally {
-            Remove-Item env:SSH_ORIGINAL_COMMAND -ErrorAction SilentlyContinue
-        }
+        Test-SshCommand | Should -Be 'rejected'
     }
 
     It 'rejects command with partial path match' {
         $env:SSH_ORIGINAL_COMMAND = 'C:\Program Files\other\filerestore.bat'
-        try {
-            { . $script:TestScript } | Should -Throw 'EXIT:1'
-        } finally {
-            Remove-Item env:SSH_ORIGINAL_COMMAND -ErrorAction SilentlyContinue
-        }
+        Test-SshCommand | Should -Be 'rejected'
     }
 
-    It 'passes through when SSH_ORIGINAL_COMMAND is not set' {
+    It 'returns null when SSH_ORIGINAL_COMMAND is not set' {
         Remove-Item env:SSH_ORIGINAL_COMMAND -ErrorAction SilentlyContinue
-        { . $script:TestScript } | Should -Throw 'EXIT:1'
+        Test-SshCommand | Should -BeNullOrEmpty
+    }
+
+    It 'extracts arguments from valid command' {
+        $env:SSH_ORIGINAL_COMMAND = '"C:\Program Files\filerestore\filerestore.bat" restore --serial ABC'
+        Test-SshCommand | Should -Be 'restore --serial ABC'
+    }
+
+    It 'rejects command with wrong script name' {
+        $env:SSH_ORIGINAL_COMMAND = '"C:\Program Files\filerestore\filerestore.bat-evil" restore'
+        Test-SshCommand | Should -Be 'rejected'
     }
 }
 
@@ -72,7 +70,8 @@ Describe 'SSH command restriction' {
 # =============================================================================
 Describe 'Argument parsing' {
     It 'no arguments shows usage and exits 1' {
-        { . $script:TestScript } | Should -Throw 'EXIT:1'
+        $result = Invoke-TestScript -Arguments @()
+        $result.ExitCode | Should -Be 1
     }
 
     It 'unknown mode shows error' {
@@ -411,6 +410,29 @@ Describe 'Manual vs automatic mode' {
         $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', '/tmp/testdata')
         $result.ExitCode | Should -Be 1
     }
+
+    It 'automatic mode: trailing backslash on --source-path succeeds' {
+        Mock Invoke-Robocopy { 0 }
+        Mock Join-Path { "$Path/$ChildPath" }
+
+        $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', 'C:\test\')
+        $result.ExitCode | Should -Be 0
+        Should -Invoke Invoke-Robocopy -Times 1
+    }
+
+    It 'automatic mode: trailing backslash is treated as directory restore' {
+        Mock Invoke-Robocopy { 0 }
+        Mock Join-Path { "$Path/$ChildPath" }
+        Mock Test-Path { $true } -ParameterFilter { $Path -and $Path -notlike '*lockfile*' -and $PathType -ne 'Leaf' }
+        Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }
+        # A path with trailing backslash should never be treated as a file
+        Mock Test-Path { $false } -ParameterFilter { $PathType -eq 'Leaf' }
+
+        $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', 'C:\test\')
+        $result.ExitCode | Should -Be 0
+        Should -Invoke New-Item -Times 1
+        Should -Invoke Invoke-Robocopy -Times 1
+    }
 }
 
 # =============================================================================
@@ -436,16 +458,22 @@ Describe 'Drive letter stripping logic' {
         $result = '\\server\share' -replace '^[A-Za-z]:\\', ''
         $result | Should -Be '\\server\share'
     }
+
+    It 'strips drive letter from path with trailing backslash C:\test\' {
+        $result = 'C:\test\' -replace '^[A-Za-z]:\\', ''
+        $result | Should -Be 'test\'
+    }
+
+    It 'strips drive letter from root path C:\' {
+        $result = 'C:\' -replace '^[A-Za-z]:\\', ''
+        $result | Should -Be ''
+    }
 }
 
 # =============================================================================
 # Function: Unmount-AndCleanup (unit tests via dot-source)
 # =============================================================================
 Describe 'Unmount-AndCleanup function' {
-    BeforeAll {
-        . $script:FuncScript
-    }
-
     BeforeEach {
         Mock Test-Path { $false }
         Mock Remove-Junction { }
