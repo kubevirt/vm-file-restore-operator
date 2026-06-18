@@ -209,6 +209,9 @@ if (-not $SourcePath) {
 # --- Automatic mode: wrap in try/finally to guarantee cleanup ---
 $copyFailed = $false
 try {
+    # Normalize: Strip trailing backslash
+    $SourcePath = $SourcePath.TrimEnd('\')
+
     # Construct relative backup path
     # For full disk snapshots, strip drive letter and leading backslash
     # "C:\test" -> "test", "C:\foo\bar" -> "foo\bar"

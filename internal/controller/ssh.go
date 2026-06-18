@@ -110,6 +110,10 @@ func BuildSSHCommand(osType, volumeName, mountPath, sourcePath string) string {
 
 	scriptPath := GetHelperScriptPath(osType)
 
+	// Strip trailing slashes/backslashes to prevent quoting issues
+	mountPath = strings.TrimRight(mountPath, `/\`)
+	sourcePath = strings.TrimRight(sourcePath, `/\`)
+
 	var cmd string
 	if osType == osTypeWindows {
 		// Windows: quote mount-path and source-path
