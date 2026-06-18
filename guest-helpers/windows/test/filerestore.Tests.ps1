@@ -7,10 +7,31 @@ BeforeAll {
     $script:TestScript = Join-Path $TestDrive 'filerestore.ps1'
     Get-TestableScript -OutputPath $script:TestScript
 
-    # Dot-source to load all functions (test-mode guard returns before main logic)
-    $env:FILERESTORE_TEST_MODE = '1'
+    # Dot-source to load all functions (dot-source guard returns before main logic)
     . $script:TestScript
-    Remove-Item env:FILERESTORE_TEST_MODE
+
+    # Shared mock baseline for restore-mode tests: standard disk, partition,
+    # and no-op stubs for disk/junction/BitLocker cmdlets.
+    function script:Initialize-RestoreMocks {
+        Mock Set-Disk { }
+        Mock New-Junction { }
+        Mock Remove-Junction { }
+        Mock Unlock-BitLocker { }
+        Mock Get-Disk {
+            @([PSCustomObject]@{
+                Number = 1; SerialNumber = 'ABC123'
+                IsOffline = $false; IsReadOnly = $false
+            })
+        }
+        Mock Get-Partition {
+            [PSCustomObject]@{
+                DiskNumber = 1; PartitionNumber = 1
+                Type = 'Basic'; Size = 50GB; DriveLetter = 'E'
+            }
+        }
+        Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }
+        Mock Test-Path { $true } -ParameterFilter { $Path -and $Path -notlike '*lockfile*' }
+    }
 
     # Helper to run the main entry point and capture exit code
     function script:Invoke-TestScript {
@@ -23,6 +44,8 @@ BeforeAll {
                 Set-Item "env:$key" $Env[$key]
             }
             return @{ ExitCode = (Invoke-FileRestore $Arguments); Threw = $false }
+        } catch {
+            return @{ ExitCode = -1; Threw = $true; Error = $_ }
         } finally {
             foreach ($key in $Env.Keys) {
                 Remove-Item "env:$key" -ErrorAction SilentlyContinue
@@ -90,13 +113,18 @@ Describe 'Argument parsing' {
         $result.ExitCode | Should -Be 1
     }
 
-    It 'unknown flag rejected' {
-        $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC', '--mount-path', '/tmp/mnt', '--bogus', 'val')
+    It '--serial as last arg (no value) exits 1' {
+        $result = Invoke-TestScript -Arguments @('restore', '--mount-path', '/tmp/mnt', '--serial')
         $result.ExitCode | Should -Be 1
     }
 
-    It 'rejects unknown mode' {
-        $result = Invoke-TestScript -Arguments @('bogus')
+    It '--mount-path as last arg (no value) exits 1' {
+        $result = Invoke-TestScript -Arguments @('restore', '--mount-path')
+        $result.ExitCode | Should -Be 1
+    }
+
+    It 'unknown flag rejected' {
+        $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC', '--mount-path', '/tmp/mnt', '--bogus', 'val')
         $result.ExitCode | Should -Be 1
     }
 
@@ -206,16 +234,7 @@ Describe 'Disk discovery' {
 # =============================================================================
 Describe 'Partition discovery' {
     BeforeEach {
-        Mock Set-Disk { }
-        Mock New-Junction { }
-        Mock Remove-Junction { }
-        Mock Unlock-BitLocker { }
-        Mock Get-Disk {
-            @([PSCustomObject]@{
-                Number = 1; SerialNumber = 'ABC123'
-                IsOffline = $false; IsReadOnly = $false
-            })
-        }
+        Initialize-RestoreMocks
     }
 
     It 'filters out Reserved/System/Recovery partitions' {
@@ -265,25 +284,11 @@ Describe 'Partition discovery' {
 # =============================================================================
 Describe 'BitLocker handling' {
     BeforeEach {
-        Mock Set-Disk { }
-        Mock New-Junction { }
-        Mock Remove-Junction { }
-        Mock Get-Disk {
-            @([PSCustomObject]@{
-                Number = 1; SerialNumber = 'ABC123'
-                IsOffline = $false; IsReadOnly = $false
-            })
-        }
-        Mock Get-Partition {
-            [PSCustomObject]@{
-                DiskNumber = 1; PartitionNumber = 1
-                Type = 'Basic'; Size = 50GB; DriveLetter = 'E'
-            }
-        }
+        Initialize-RestoreMocks
     }
 
     It 'unlocks BitLocker when lockfile exists' {
-        Mock Test-Path { $true }
+        Mock Test-Path { $true } -ParameterFilter { $Path -like '*lockfile*' }
         Mock Read-FileContent { 'recovery-pass-123' }
         Mock Unlock-BitLocker { }
 
@@ -308,22 +313,7 @@ Describe 'BitLocker handling' {
 # =============================================================================
 Describe 'Junction creation' {
     BeforeEach {
-        Mock Set-Disk { }
-        Mock Remove-Junction { }
-        Mock Unlock-BitLocker { }
-        Mock Get-Disk {
-            @([PSCustomObject]@{
-                Number = 1; SerialNumber = 'ABC123'
-                IsOffline = $false; IsReadOnly = $false
-            })
-        }
-        Mock Get-Partition {
-            [PSCustomObject]@{
-                DiskNumber = 1; PartitionNumber = 1
-                Type = 'Basic'; Size = 50GB; DriveLetter = 'E'
-            }
-        }
-        Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }
+        Initialize-RestoreMocks
     }
 
     It 'removes existing junction before creating new one' {
@@ -350,31 +340,19 @@ Describe 'Junction creation' {
 # =============================================================================
 Describe 'Manual vs automatic mode' {
     BeforeEach {
-        Mock Set-Disk { }
-        Mock New-Junction { }
-        Mock Remove-Junction { }
-        Mock Unlock-BitLocker { }
+        Initialize-RestoreMocks
         Mock Invoke-Robocopy { 0 }
         Mock New-Item { }
-        Mock Get-Disk {
-            @([PSCustomObject]@{
-                Number = 1; SerialNumber = 'ABC123'
-                IsOffline = $false; IsReadOnly = $false
-            })
-        }
-        Mock Get-Partition {
-            [PSCustomObject]@{
-                DiskNumber = 1; PartitionNumber = 1
-                Type = 'Basic'; Size = 50GB; DriveLetter = 'E'
-            }
-        }
-        Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }
-        Mock Test-Path { $true } -ParameterFilter { $Path -and $Path -notlike '*lockfile*' }
     }
 
     It 'manual mode exits 0 after junction (no --source-path)' {
         $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup')
         $result.ExitCode | Should -Be 0
+    }
+
+    It 'automatic mode: UNC source path rejected' {
+        $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', '\\server\share\data')
+        $result.ExitCode | Should -Be 1
     }
 
     It 'automatic mode: source path not found exits 1' {

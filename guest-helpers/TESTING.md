@@ -66,9 +66,9 @@ The production script is modified minimally for testability:
 
 The test helper extracts the PowerShell portion from the bat/PS polyglot file
 by stripping the batch preamble (everything up to the closing `#>` block
-comment marker). The extracted script is dot-sourced with
-`FILERESTORE_TEST_MODE=1`, which loads all function definitions without
-executing the main entry point.
+comment marker). The extracted script is dot-sourced, which triggers a
+`$MyInvocation.InvocationName` guard that loads all function definitions
+without executing the main entry point.
 
 Windows-only cmdlets (`Get-Disk`, `Set-Disk`, `Get-Partition`, etc.) are
 defined as stub functions with proper parameter declarations, enabling Pester's

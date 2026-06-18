@@ -27,7 +27,8 @@ if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
         exit 1
     fi
     # Extract arguments from SSH_ORIGINAL_COMMAND
-    # Split remaining arguments on whitespace (no eval — avoids shell injection)
+    # Split on whitespace (no eval — avoids shell injection).
+    # Note: arguments containing spaces or quotes are not supported via SSH.
     read -ra _args <<< "${SSH_ORIGINAL_COMMAND#/usr/local/bin/filerestore.sh}" || true
     set -- "${_args[@]}"
     unset SSH_ORIGINAL_COMMAND  # Clear to prevent loops

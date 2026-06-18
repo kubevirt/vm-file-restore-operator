@@ -105,9 +105,18 @@ function Invoke-FileRestore {
     $i = 1
     while ($i -lt $Arguments.Count) {
         switch ($Arguments[$i]) {
-            '--serial'      { $Serial = $Arguments[$i + 1]; $i += 2 }
-            '--mount-path'  { $MountPath = $Arguments[$i + 1]; $i += 2 }
-            '--source-path' { $SourcePath = $Arguments[$i + 1]; $i += 2 }
+            '--serial'      {
+                if ($i + 1 -ge $Arguments.Count) { Write-Host "ERROR: --serial requires a value"; return 1 }
+                $Serial = $Arguments[$i + 1]; $i += 2
+            }
+            '--mount-path'  {
+                if ($i + 1 -ge $Arguments.Count) { Write-Host "ERROR: --mount-path requires a value"; return 1 }
+                $MountPath = $Arguments[$i + 1]; $i += 2
+            }
+            '--source-path' {
+                if ($i + 1 -ge $Arguments.Count) { Write-Host "ERROR: --source-path requires a value"; return 1 }
+                $SourcePath = $Arguments[$i + 1]; $i += 2
+            }
             default {
                 Write-Host "ERROR: Unknown argument: $($Arguments[$i])"
                 Show-Usage; return 1
@@ -217,7 +226,12 @@ function Invoke-FileRestore {
         # Construct relative backup path
         # For full disk snapshots, strip drive letter and leading backslash
         # "C:\test" -> "test", "C:\foo\bar" -> "foo\bar"
+        if ($SourcePath -match '^\\\\') {
+            Write-Host "ERROR: UNC paths are not supported for --source-path"
+            return 1
+        }
         $RelativePath = $SourcePath -replace '^[A-Za-z]:\\', ''
+        $RelativePath = $RelativePath.TrimStart('\')
         $BackupPath = Join-Path $MountPath $RelativePath
 
         # Validate source path on the backup volume (checked after mount)
@@ -252,18 +266,19 @@ function Invoke-FileRestore {
     return 0
 }
 
-# Allow importing for unit tests without executing main logic
-if ($env:FILERESTORE_TEST_MODE -eq '1') { return }
+# When dot-sourced (e.g. by Pester), load functions but skip main logic
+if ($MyInvocation.InvocationName -eq '.') { return }
 
 # --- Entry point ---
 
-# When invoked via SSH with command= restriction, validate and re-invoke
+# When invoked via SSH with command= restriction, validate and dispatch
 $sshResult = Test-SshCommand
 if ($sshResult -eq 'rejected') { exit 1 }
 if ($null -ne $sshResult) {
     $env:SSH_ORIGINAL_COMMAND = $null
-    cmd /c "`"C:\Program Files\filerestore\filerestore.bat`" $sshResult"
-    exit $LASTEXITCODE
+    $sshArgs = $sshResult -split '\s+' | Where-Object { $_ -ne '' }
+    $rc = Invoke-FileRestore $sshArgs
+    exit $rc
 }
 
 $rc = Invoke-FileRestore $args

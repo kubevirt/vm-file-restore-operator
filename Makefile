@@ -141,6 +141,8 @@ CONTAINER_ENGINE ?= $(CONTAINER_TOOL)
 PWSH_IMAGE ?= mcr.microsoft.com/dotnet/sdk:9.0
 BATS_IMAGE ?= bats/bats:1.13.0
 PESTER_VERSION ?= 5.7.1
+# :Z relabels for SELinux; use empty value on Docker Desktop (macOS/Windows)
+VOLUME_OPTS ?= :Z
 
 .PHONY: test-scripts
 test-scripts: test-scripts-linux test-scripts-windows ## Run all guest-helper script tests
@@ -148,7 +150,7 @@ test-scripts: test-scripts-linux test-scripts-windows ## Run all guest-helper sc
 .PHONY: test-scripts-linux
 test-scripts-linux: ## Run BATS tests for Linux guest helper (containerized)
 	$(CONTAINER_ENGINE) run --rm \
-		-v $(shell pwd):/workspace:Z \
+		-v $(shell pwd):/workspace$(VOLUME_OPTS) \
 		-w /workspace \
 		$(BATS_IMAGE) \
 		guest-helpers/linux/test/filerestore.bats
@@ -156,7 +158,7 @@ test-scripts-linux: ## Run BATS tests for Linux guest helper (containerized)
 .PHONY: test-scripts-windows
 test-scripts-windows: ## Run Pester tests for Windows guest helper (containerized)
 	$(CONTAINER_ENGINE) run --rm \
-		-v $(shell pwd):/workspace:Z \
+		-v $(shell pwd):/workspace$(VOLUME_OPTS) \
 		-w /workspace \
 		$(PWSH_IMAGE) \
 		pwsh -NoProfile -Command " \
