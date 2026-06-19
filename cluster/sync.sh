@@ -4,6 +4,7 @@
 
 set -e
 
+# TODO: set default image to quay.io/kubevirt/vm-file-restore-operator:latest when ready
 : "${IMG:=quay.io/agilboa/vm-file-restore-operator:latest}"
 
 echo "Deploying operator with image: ${IMG}"
@@ -16,9 +17,13 @@ make docker-build docker-push build-installer IMG="${IMG}"
 echo "Deploying to cluster..."
 kubectl apply -f dist/install.yaml
 
+# Force pod restart to pick up new image (tag may be unchanged)
+echo "Restarting deployment to pick up new image..."
+kubectl rollout restart deployment/vm-file-restore-operator -n file-restore
+
 echo ""
-echo "Waiting for operator pod to be ready..."
-kubectl wait --for=condition=available --timeout=60s deployment/vm-file-restore-operator -n file-restore || {
+echo "Waiting for rollout to complete..."
+kubectl rollout status deployment/vm-file-restore-operator -n file-restore --timeout=60s || {
   echo ""
   echo "Warning: Deployment not ready after 60s"
   kubectl get pods -n file-restore
