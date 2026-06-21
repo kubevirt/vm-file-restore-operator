@@ -4,7 +4,7 @@
 
 set -e
 
-: "${IMG:=quay.io/agilboa/vm-file-restore-operator:latest}"
+: "${IMG:=quay.io/kubevirt/vm-file-restore-operator:latest}"
 
 echo "Deploying operator with image: ${IMG}"
 
