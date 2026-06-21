@@ -1,14 +1,15 @@
-# HCO Integration Requirements
+# HCO Integration
 
-> **Status:** This operator is currently **standalone**. HCO integration is planned but not yet implemented. The operator can be deployed and used independently without HCO.
+> **Status:** HCO integration support **implemented**. The operator can be deployed standalone or managed by HCO (HyperConverged Cluster Operator).
 
 ## Overview
 
-To be managed by HCO (Hyperconverged Cluster Operator), the vm-file-restore-operator needs to follow the same pattern as other KubeVirt ecosystem operators (KubeVirt, CDI, SSP, AAQ).
+The vm-file-restore-operator follows the standard HCO integration pattern used by other KubeVirt ecosystem operators (KubeVirt, CDI, SSP, AAQ). It can operate in two modes:
 
-**Current Implementation:** The operator currently implements the restore logic (VirtualMachineFileRestore CR and controller) and is fully functional as a standalone operator.
+1. **Standalone**: Deploy directly using `kubectl apply` or `make deploy`
+2. **HCO-managed**: HCO creates and manages the FileRestoreOperator CR
 
-## HCO Architecture Pattern
+## HCO Architecture
 
 ```
 User creates HyperConverged CR
@@ -19,227 +20,155 @@ HCO reconciles and creates operator CRs:
   - SSP
   - NetworkAddonsConfig
   - AAQ
-  - FileRestoreOperator ← YOU
+  - FileRestoreOperator ✅
   ↓
-Each operator watches its own CR
+FileRestoreOperator controller reconciles configuration
+  ↓
+Users create VirtualMachineFileRestore CRs for restore operations
 ```
 
-## What You Need
+## Custom Resources
 
-### 1. **Operator-Level CR** (Missing!)
+### FileRestoreOperator CR (Operator Configuration)
 
-You currently have:
-- ✅ VirtualMachineFileRestore CR (the restore job)
+API group: `filerestore.kubevirt.io/v1alpha1`
 
-You need:
-- ❌ **FileRestoreOperator CR** (operator configuration)
+The FileRestoreOperator CR configures the operator itself and is managed by HCO:
 
-**Example from SSP:**
 ```yaml
-apiVersion: ssp.kubevirt.io/v1beta2
-kind: SSP
-metadata:
-  name: ssp
-  namespace: kubevirt-hyperconverged
-spec:
-  templateValidator:
-    replicas: 2
-  commonTemplates:
-    namespace: openshift
-```
-
-**You need:**
-```yaml
-apiVersion: filerestore.kubevirt.io/v1beta1
+apiVersion: filerestore.kubevirt.io/v1alpha1
 kind: FileRestoreOperator
 metadata:
   name: vm-file-restore-operator
-  namespace: kubevirt-hyperconverged
+  namespace: file-restore
 spec:
-  # Operator configuration
-  replicas: 1
-  infra: {}       # Node placement
-  workloads: {}   # Workload config
+  imagePullPolicy: IfNotPresent
+  infra: {}
+  workloads: {}
+  tlsSecurityProfile:
+    type: Intermediate
 ```
 
-### 2. **Two-Level CRD Structure**
+**Spec Fields:**
+- `imagePullPolicy`: Pull policy for operator images
+- `infra`: Node placement for infrastructure pods (future)
+- `workloads`: Node placement for workload pods (future)
+- `tlsSecurityProfile`: TLS configuration (Old, Intermediate, Modern, Custom)
 
-**Level 1: Operator Configuration CR** (Created by HCO)
-- Kind: `FileRestoreOperator`
-- Configures the operator itself
-- Set by HCO based on HyperConverged CR settings
-- Controls: replicas, node placement, feature gates
+**Status Fields:**
+- `phase`: Deployment phase (Deploying, Deployed, Error)
+- `operatorVersion`: Current operator version
+- `observedGeneration`: Last reconciled generation
 
-**Level 2: Workload CRs** (Created by users)
-- Kind: `VirtualMachineFileRestore`  ← You already have this!
-- The actual restore jobs
-- Created by cluster users/admins
-- Watched by your operator controller
+### VirtualMachineFileRestore CR (Restore Operations)
 
-### 3. **Operator Structure Changes**
+API group: `filerestore.kubevirt.io/v1alpha1`
 
-Current:
-```
-vm-file-restore-operator/
-├── api/v1alpha1/
-│   └── virtualmachinefilerestore_types.go  ← Restore job CR
-└── internal/controller/
-    └── virtualmachinefilerestore_controller.go
-```
+Users create VirtualMachineFileRestore CRs to perform file restore operations (unchanged from standalone mode):
 
-Need:
-```
-vm-file-restore-operator/
-├── api/
-│   ├── v1beta1/                         ← NEW
-│   │   └── filerestoreoperator_types.go      # Operator config CR
-│   └── v1alpha1/
-│       └── virtualmachinefilerestore_types.go # Restore job CR
-└── internal/controller/
-    ├── filerestoreoperator_controller.go      ← NEW (HCO manages this)
-    └── virtualmachinefilerestore_controller.go # Restore logic
+```yaml
+apiVersion: filerestore.kubevirt.io/v1alpha1
+kind: VirtualMachineFileRestore
+metadata:
+  name: restore-my-files
+spec:
+  virtualMachineName: my-vm
+  source:
+    volumeSnapshot:
+      name: vm-snapshot-1
+  targetPaths:
+    - /home/user/document.txt
 ```
 
-### 4. **HCO Integration Points**
+## TLS Security Profiles
 
-**In HCO repository, add:**
+The operator supports OpenShift-style TLS security profiles for metrics server:
 
-1. **Operand handler** (in HCO repo):
-```go
-// controllers/operands/filerestoreoperator.go
-func newFileRestoreOperator(hc *hcov1beta1.HyperConverged) *operands.FileRestoreOperatorHandler {
-    return &operands.FileRestoreOperatorHandler{
-        // Creates FileRestoreOperator CR
-    }
-}
+- **Old**: TLS 1.0+, maximum compatibility
+- **Intermediate** (default): TLS 1.2+, balanced security/compatibility
+- **Modern**: TLS 1.3+, maximum security
+- **Custom**: User-defined ciphersuites and min TLS version
+
+Example custom profile:
+
+```yaml
+spec:
+  tlsSecurityProfile:
+    type: Custom
+    custom:
+      ciphers:
+        - ECDHE-RSA-AES128-GCM-SHA256
+        - ECDHE-RSA-AES256-GCM-SHA384
+      minTLSVersion: VersionTLS13
 ```
 
-2. **Add to HyperConverged CR** (in HCO repo):
-```go
-// api/v1beta1/hyperconverged_types.go
-type HyperConvergedSpec struct {
-    // ... existing fields
-    FileRestore *FileRestoreConfig `json:"fileRestore,omitempty"`
-}
-```
+## OLM Integration
 
-3. **Add to reconcile loop** (in HCO repo):
-```go
-// controllers/hyperconverged/hyperconverged_controller.go
-func (r *HyperConvergedReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-    // ... existing operands
+The operator includes a CSV (ClusterServiceVersion) generator for OLM bundle creation:
 
-    // Ensure FileRestoreOperator CR exists
-    if err := r.ensureFileRestoreOperator(hc); err != nil {
-        return ctrl.Result{}, err
-    }
-}
-```
-
-## Implementation Steps
-
-### Phase 1: Add Operator-Level CR
-
-1. Create new API version:
 ```bash
-kubebuilder create api --group restore --version v1beta1 --kind FileRestoreOperator
+# Generate CSV bundle
+make bundle VERSION=1.0.0 PREV_VERSION=0.9.0
+
+# The csv-generator binary is built into the operator image at:
+/usr/bin/csv-generator
+
+# HCO invokes it to generate CSV manifests dynamically
 ```
 
-2. Define FileRestoreOperator spec:
-```go
-type FileRestoreOperatorSpec struct {
-    // Infra configures resources for operator pod
-    Infra HyperConvergedConfig `json:"infra,omitempty"`
+## Deployment
 
-    // Workloads configures resources for restore workloads
-    Workloads HyperConvergedConfig `json:"workloads,omitempty"`
+### Standalone Deployment
 
-    // FeatureGates enables optional features
-    FeatureGates FileRestoreFeatureGates `json:"featureGates,omitempty"`
-}
+```bash
+# Install CRDs
+make install
+
+# Deploy operator
+make deploy IMG=quay.io/kubevirt/vm-file-restore-operator:latest
+
+# Create FileRestoreOperator CR (optional, for TLS config)
+kubectl apply -f config/samples/restore_v1alpha1_filerestoreoperator.yaml
 ```
 
-3. Create controller that:
-   - Watches FileRestoreOperator CR
-   - Creates/manages operator Deployment
-   - Sets defaults from HCO
+### HCO-Managed Deployment
 
-### Phase 2: Update Existing Controller
+HCO automatically creates and manages the FileRestoreOperator CR. Users only interact with VirtualMachineFileRestore CRs for restore operations.
 
-Your VirtualMachineFileRestore controller:
-- Stays the same
-- Continues watching VirtualMachineFileRestore CRs
-- Reads configuration from FileRestoreOperator CR (if needed)
+## Implementation Details
 
-### Phase 3: HCO Integration
+### Controller
 
-Submit PR to HCO repository adding:
-1. Operand handler for FileRestoreOperator
-2. Field in HyperConverged CR
-3. RBAC for managing FileRestoreOperator CRs
-4. Default configuration
+The FileRestoreOperator controller:
+- Watches FileRestoreOperator CRs
+- Updates status to `Deployed` when reconciled
+- Tracks `observedGeneration` for spec changes
+- Provides TLS configuration to the metrics server
 
-## Example from Real HCO-Managed Operators
+### ManagedTLSWatcher
 
-### SSP Operator Structure
+Dynamically updates TLS configuration based on the FileRestoreOperator CR's `tlsSecurityProfile`:
+- Monitors FileRestoreOperator resources
+- Applies TLS changes to metrics server without restart
+- Falls back to Intermediate profile if no CR exists
 
-```
-ssp-operator/
-├── api/v1beta2/
-│   └── ssp_types.go           # SSP CR (operator config)
-└── internal/operands/
-    ├── template-validator/     # Workload 1
-    ├── vm-console-proxy/       # Workload 2
-    └── common-templates/       # Workload 3
-```
+### CSV Generator
 
-**SSP CR is created by HCO**
-**SSP operator creates the actual workloads**
+Binary tool that generates ClusterServiceVersion manifests for OLM:
+- Embeds CRD definitions
+- Generates RBAC rules
+- Outputs deployment specifications
+- Supports upgrade paths via `--replaces-csv-version`
 
-### Your Pattern Should Be
+## Backward Compatibility
 
-```
-vm-file-restore-operator/
-├── api/
-│   ├── v1beta1/
-│   │   └── filerestoreoperator_types.go  # Created by HCO
-│   └── v1alpha1/
-│       └── virtualmachinefilerestore_types.go  # Created by users
-└── controllers/
-    ├── filerestoreoperator_controller.go     # Manages operator deployment
-    └── virtualmachinefilerestore_controller.go  # Manages restores
-```
+The operator maintains full backward compatibility:
+- Existing VirtualMachineFileRestore workflows unchanged
+- FileRestoreOperator CR is optional for standalone deployments
+- TLS defaults to Intermediate profile if not configured
 
-## Key Differences from Standalone
+## See Also
 
-| Aspect | Standalone | HCO-Managed |
-|--------|------------|-------------|
-| **Deployment** | User runs `kubectl apply -f install.yaml` | HCO creates operator CR |
-| **Configuration** | Direct operator Deployment | FileRestoreOperator CR |
-| **RBAC** | User creates manually | HCO manages |
-| **Lifecycle** | Independent | HCO upgrades/manages |
-| **Integration** | None | Part of HyperConverged stack |
-
-## Benefits of HCO Integration
-
-1. **Unified Management**: Deploy entire stack with one CR
-2. **Coordinated Upgrades**: HCO manages version compatibility
-3. **Consistent Configuration**: Infra/workload placement across all operators
-4. **Feature Gates**: Cluster-wide feature management
-5. **OLM Integration**: Operator Lifecycle Manager support
-6. **Production Ready**: Matches other KubeVirt ecosystem operators
-
-## Next Steps
-
-1. **Add operator-level CR** (FileRestoreOperator)
-2. **Test standalone** (still works without HCO)
-3. **Contact HCO maintainers** about integration
-4. **Submit PR to HCO** with operand handler
-5. **Coordinate release** with HCO team
-
-## References
-
-- HCO Repository: https://github.com/kubevirt/hyperconverged-cluster-operator
-- SSP Operator: https://github.com/kubevirt/ssp-operator
-- CDI: https://github.com/kubevirt/containerized-data-importer
-- AAQ: https://github.com/kubevirt/application-aware-quota
+- [Design Specification](superpowers/specs/2026-06-21-hco-integration-design.md)
+- [HCO Requirements Analysis](HCO_REQUIREMENTS_ANALYSIS.md)
+- [Certificate Rotation](CERTIFICATE_ROTATION.md) (planned for webhook support)
