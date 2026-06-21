@@ -1,3 +1,4 @@
+//go:build tools
 // +build tools
 
 package v1alpha1

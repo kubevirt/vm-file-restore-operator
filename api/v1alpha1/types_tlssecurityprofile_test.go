@@ -81,7 +81,7 @@ func TestCustomTLSProfile(t *testing.T) {
 	// Verify we can create a custom TLS profile
 	customSpec := &CustomTLSProfile{
 		TLSProfileSpec: TLSProfileSpec{
-			Ciphers: []string{"CUSTOM-CIPHER"},
+			Ciphers:       []string{"CUSTOM-CIPHER"},
 			MinTLSVersion: VersionTLS12,
 		},
 	}

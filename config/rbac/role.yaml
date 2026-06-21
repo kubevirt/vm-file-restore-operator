@@ -45,6 +45,7 @@ rules:
 - apiGroups:
   - filerestore.kubevirt.io
   resources:
+  - filerestoreoperators
   - virtualmachinefilerestores
   verbs:
   - create
@@ -57,12 +58,14 @@ rules:
 - apiGroups:
   - filerestore.kubevirt.io
   resources:
+  - filerestoreoperators/finalizers
   - virtualmachinefilerestores/finalizers
   verbs:
   - update
 - apiGroups:
   - filerestore.kubevirt.io
   resources:
+  - filerestoreoperators/status
   - virtualmachinefilerestores/status
   verbs:
   - get
