@@ -4,8 +4,7 @@
 
 set -e
 
-# TODO: set default image to quay.io/kubevirt/vm-file-restore-operator:latest when ready
-: "${IMG:=quay.io/agilboa/vm-file-restore-operator:latest}"
+: "${IMG:=quay.io/kubevirt/vm-file-restore-operator:latest}"
 
 echo "Deploying operator with image: ${IMG}"
 
