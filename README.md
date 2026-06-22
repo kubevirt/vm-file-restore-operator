@@ -345,36 +345,48 @@ the '--force' flag and manually ensure that any custom configuration
 previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
 is manually re-applied afterwards.
 
-## Development
+## Testing
 
-### Running Tests
+### Unit Tests
 
-**Unit tests:**
+Run unit tests:
 ```bash
 make test
 ```
 
-**E2E tests:**
+### E2E Tests
 
-Prerequisites:
-- kubevirtci cluster running (see [kubevirtci docs](https://github.com/kubevirt/kubevirtci))
+End-to-end tests run against a kubevirtci cluster with the operator deployed.
+
+**Prerequisites:**
+- kubevirtci cluster running (`make cluster-up`)
+- Operator deployed:
+  ```bash
+  make cluster-sync
+  ```
+  To use a custom image:
+  ```bash
+  IMG=<your-registry>/vm-file-restore-operator:tag make cluster-sync
+  ```
+- `virtctl` in PATH
 - KUBECONFIG pointing to the cluster
 
+**Run tests:**
 ```bash
-# Deploy operator to your running kubevirtci cluster
-make cluster-sync
-
-# Run e2e tests
 make test-e2e
 ```
 
-**Using an existing kubevirtci cluster:**
+**File Restore Test:**
+The file restore e2e test validates the complete workflow:
+- Creates a Fedora VM (10Gi boot disk from quay.io/containerdisks/fedora:44)
+- Installs guest helper via SSH with operator's public key
+- Creates test user and generates 1GB test file
+- Creates a VolumeSnapshot of the boot disk
+- Deletes the file to verify restore actually works
+- Creates VirtualMachineFileRestore CR
+- Polls for restore completion and verifies file size, ownership, and permissions
 
-If you already have a kubevirtci cluster running, you can skip `cluster-up` and run tests directly:
-```bash
-export KUBECONFIG=$(./cluster/kubevirtci.sh && kubevirtci::kubeconfig)
-make test-e2e
-```
+## Development
 
 ### Linting
 
