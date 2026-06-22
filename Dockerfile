@@ -17,6 +17,8 @@ RUN go mod download
 COPY cmd/main.go cmd/main.go
 COPY api/ api/
 COPY internal/ internal/
+COPY pkg/ pkg/
+COPY tools/ tools/
 
 # Build
 # the GOARCH has not a default value to allow the binary be built according to the host where the command
@@ -25,11 +27,16 @@ COPY internal/ internal/
 # by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
 
+# Build csv-generator binary
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
+    go build -a -o csv-generator ./tools/csv-generator/
+
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /
 COPY --from=builder /workspace/manager .
+COPY --from=builder /workspace/csv-generator /usr/bin/csv-generator
 USER 65532:65532
 
 ENTRYPOINT ["/manager"]

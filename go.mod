@@ -3,6 +3,7 @@ module kubevirt.io/vm-file-restore-operator
 go 1.26
 
 require (
+	github.com/ghodss/yaml v1.0.0
 	github.com/kubernetes-csi/external-snapshotter/client/v6 v6.3.0
 	github.com/onsi/ginkgo/v2 v2.22.0
 	github.com/onsi/gomega v1.36.1
@@ -108,6 +109,7 @@ require (
 	google.golang.org/protobuf v1.36.5 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
+	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/apiextensions-apiserver v0.34.3 // indirect
 	k8s.io/apiserver v0.34.3 // indirect
