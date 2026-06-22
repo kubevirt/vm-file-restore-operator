@@ -24,7 +24,7 @@
 
 **Architecture:** State machine controller with 9 phases (Init → Hotplugging → WaitingForAttachment → SSHConnecting → Restoring → VolumeReady/Cleanup → Succeeded/Failed), global SSH keypair managed by operator, declarative hotplug via VM spec patching, aligned with KubeVirt POC implementation
 
-**Tech Stack:** Go 1.25+, controller-runtime, golang.org/x/crypto/ssh, KubeVirt APIs
+**Tech Stack:** Go 1.26+, controller-runtime, golang.org/x/crypto/ssh, KubeVirt APIs
 
 ---
 

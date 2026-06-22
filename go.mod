@@ -1,6 +1,6 @@
 module kubevirt.io/vm-file-restore-operator
 
-go 1.25.9
+go 1.26
 
 require (
 	github.com/kubernetes-csi/external-snapshotter/client/v6 v6.3.0
