@@ -1,0 +1,6 @@
+#!/bin/bash
+echo "umount $*" >> "$MOCK_CALL_LOG"
+if [[ "$*" == *"-l"* ]]; then
+    exit "${MOCK_UMOUNT_LAZY_EXIT:-0}"
+fi
+exit "${MOCK_UMOUNT_EXIT:-0}"

@@ -1,0 +1,3 @@
+#!/bin/bash
+echo "sync $*" >> "$MOCK_CALL_LOG"
+exit 0
