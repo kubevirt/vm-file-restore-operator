@@ -16,11 +16,16 @@ make docker-build docker-push build-installer IMG="${IMG}"
 echo "Deploying to cluster..."
 kubectl apply -f dist/install.yaml
 
+# Restart deployment to pick up new image (imagePullPolicy: IfNotPresent requires pod recreation)
 echo ""
-echo "Waiting for operator pod to be ready..."
-kubectl wait --for=condition=available --timeout=60s deployment/vm-file-restore-operator -n file-restore || {
+echo "Restarting deployment to pull new image..."
+kubectl rollout restart deployment/vm-file-restore-operator -n file-restore
+
+echo ""
+echo "Waiting for rollout to complete..."
+kubectl rollout status deployment/vm-file-restore-operator -n file-restore --timeout=60s || {
   echo ""
-  echo "Warning: Deployment not ready after 60s"
+  echo "Warning: Rollout not complete after 60s"
   kubectl get pods -n file-restore
   echo ""
   echo "Check pod logs: kubectl logs -n file-restore -l control-plane=controller-manager"
