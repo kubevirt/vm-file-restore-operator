@@ -24,6 +24,18 @@ func TestBuildSSHCommand_WindowsAutomatic(t *testing.T) {
 	assert.Equal(t, expected, command)
 }
 
+func TestBuildSSHCommand_WindowsTrailingBackslash(t *testing.T) {
+	command := BuildSSHCommand("windows", "test-restore", "C:\\backup", "C:\\Program Files\\")
+	expected := `"C:\Program Files\filerestore\filerestore.bat" restore --serial test-restore --mount-path "C:\backup" --source-path "C:\Program Files"`
+	assert.Equal(t, expected, command)
+}
+
+func TestBuildSSHCommand_LinuxTrailingSlash(t *testing.T) {
+	command := BuildSSHCommand("linux", "test-restore", "/backup", "/home/user/data/")
+	expected := "/usr/local/bin/filerestore.sh restore --serial test-restore --mount-path /backup --source-path /home/user/data"
+	assert.Equal(t, expected, command)
+}
+
 func TestBuildSSHCommand_WindowsManual(t *testing.T) {
 	command := BuildSSHCommand("windows", "test-restore", "C:\\backup", "")
 	expected := `"C:\Program Files\filerestore\filerestore.bat" restore --serial test-restore --mount-path "C:\backup"`
