@@ -36,3 +36,8 @@ echo "Deployment status:"
 kubectl get deployment -n file-restore
 echo ""
 kubectl get pods -n file-restore
+
+# Reset kustomization.yaml to avoid polluting git status
+echo ""
+echo "Cleaning up local kustomization changes..."
+git restore config/manager/kustomization.yaml 2>/dev/null || true
