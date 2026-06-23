@@ -70,6 +70,15 @@ endif
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= docker
 
+# GOOS and GOARCH define the target OS and architecture for builds.
+# Can be overridden via environment variables (e.g., GOARCH=arm64 make docker-build)
+GOOS ?= linux
+GOARCH ?= amd64
+
+# Buildah-specific variables for multi-arch builds
+BUILDAH_PLATFORM_FLAG ?= --platform $(GOOS)/$(GOARCH)
+BUILDAH_TLS_VERIFY ?= true
+
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
@@ -99,11 +108,11 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./api/...;./cmd/...;./internal/..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/...;./cmd/...;./internal/..."
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -119,8 +128,19 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 
 # E2E tests use kubevirtci for ephemeral KubeVirt clusters
 # See: https://github.com/kubevirt/kubevirtci
-# Note: You must manage kubevirtci yourself (cluster up/down)
-# This Makefile only provides deployment helpers
+
+.PHONY: cluster-up
+cluster-up: ## Bring up kubevirtci development cluster
+	./hack/cluster-up.sh
+
+.PHONY: cluster-down
+cluster-down: ## Tear down kubevirtci development cluster
+	./hack/cluster-down.sh
+
+.PHONY: cluster-kubeconfig
+cluster-kubeconfig: ## Print kubeconfig export command for kubevirtci cluster
+	@test -d ./kubevirtci || { echo "Error: kubevirtci not found. Run 'make cluster-up' first." >&2; exit 1; }
+	@echo "export KUBECONFIG=$$(./kubevirtci/cluster-up/kubeconfig.sh)"
 
 .PHONY: cluster-sync
 cluster-sync: ## Deploy the operator to kubevirtci cluster
@@ -159,11 +179,28 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build --platform=$(GOOS)/$(GOARCH) -t ${IMG} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
+
+.PHONY: buildah-image
+buildah-image: ## Build the image with the manager using buildah.
+	buildah build $(BUILDAH_PLATFORM_FLAG) -t $(IMG) -f Dockerfile .
+
+.PHONY: buildah-manifest
+buildah-manifest: buildah-image ## Create a manifest for multi-arch image using buildah.
+	-buildah manifest create $(IMAGE_REGISTRY)/$(REGISTRY_NAMESPACE)/vm-file-restore-operator:local
+	buildah manifest add --arch $(GOARCH) $(IMAGE_REGISTRY)/$(REGISTRY_NAMESPACE)/vm-file-restore-operator:local containers-storage:$(IMG)
+
+.PHONY: buildah-manifest-push
+buildah-manifest-push: ## Push the manifest for the image using buildah.
+	buildah manifest push --tls-verify=$(BUILDAH_TLS_VERIFY) --all $(IMAGE_REGISTRY)/$(REGISTRY_NAMESPACE)/vm-file-restore-operator:local docker://$(IMAGE_REGISTRY)/$(REGISTRY_NAMESPACE)/vm-file-restore-operator:$(IMAGE_TAG)
+
+.PHONY: buildah-manifest-clean
+buildah-manifest-clean: ## Clean the manifest for the image using buildah.
+	-buildah manifest rm $(IMAGE_REGISTRY)/$(REGISTRY_NAMESPACE)/vm-file-restore-operator:local
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -288,8 +325,7 @@ ifeq (, $(shell which operator-sdk 2>/dev/null))
 	@{ \
 	set -e ;\
 	mkdir -p $(dir $(OPERATOR_SDK)) ;\
-	OS=$(shell go env GOOS) && ARCH=$(shell go env GOARCH) && \
-	curl -sSLo $(OPERATOR_SDK) https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_$${OS}_$${ARCH} ;\
+	curl -sSLo $(OPERATOR_SDK) https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_$(GOOS)_$(GOARCH) ;\
 	chmod +x $(OPERATOR_SDK) ;\
 	}
 else
@@ -320,8 +356,7 @@ ifeq (,$(shell which opm 2>/dev/null))
 	@{ \
 	set -e ;\
 	mkdir -p $(dir $(OPM)) ;\
-	OS=$(shell go env GOOS) && ARCH=$(shell go env GOARCH) && \
-	curl -sSLo $(OPM) https://github.com/operator-framework/operator-registry/releases/download/v1.55.0/$${OS}-$${ARCH}-opm ;\
+	curl -sSLo $(OPM) https://github.com/operator-framework/operator-registry/releases/download/v1.55.0/$(GOOS)-$(GOARCH)-opm ;\
 	chmod +x $(OPM) ;\
 	}
 else

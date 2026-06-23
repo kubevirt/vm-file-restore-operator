@@ -358,22 +358,55 @@ make test
 
 End-to-end tests run against a kubevirtci cluster with the operator deployed.
 
-**Prerequisites:**
-- kubevirtci cluster running (`make cluster-up`)
-- Operator deployed:
-  ```bash
-  make cluster-sync
-  ```
-  To use a custom image:
-  ```bash
-  IMG=<your-registry>/vm-file-restore-operator:tag make cluster-sync
-  ```
-- `virtctl` in PATH
-- KUBECONFIG pointing to the cluster
+**Setup kubevirtci cluster:**
+
+```bash
+# Bring up a local Kubernetes cluster with KubeVirt and CDI
+# This automatically deploys pinned versions of KubeVirt and kubevirtci for reproducibility
+make cluster-up
+
+# Configure kubectl to use the cluster
+eval "$(make cluster-kubeconfig)"
+
+# Verify cluster is ready
+kubectl get nodes
+```
+
+**Customize cluster versions (optional):**
+
+```bash
+# Override KubeVirt version
+KUBEVIRT_VERSION=v1.9.0 make cluster-up
+
+# Override kubevirtci tag
+KUBEVIRTCI_TAG=<tag> make cluster-up
+
+# Override Kubernetes version
+KUBEVIRT_PROVIDER=k8s-1.37 make cluster-up
+
+# Override number of nodes
+KUBEVIRT_NUM_NODES=3 make cluster-up
+```
+
+**Deploy operator to cluster:**
+```bash
+make cluster-sync
+```
+
+To use a custom image:
+```bash
+IMG=<your-registry>/vm-file-restore-operator:tag make cluster-sync
+```
 
 **Run tests:**
 ```bash
+# Make sure virtctl is in PATH
 make test-e2e
+```
+
+**Tear down cluster when done:**
+```bash
+make cluster-down
 ```
 
 **File Restore Test:**
