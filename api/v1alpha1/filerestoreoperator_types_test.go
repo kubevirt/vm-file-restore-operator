@@ -17,10 +17,11 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"testing"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	sdkapi "kubevirt.io/controller-lifecycle-operator-sdk/api"
-	"testing"
 
 	"github.com/stretchr/testify/assert"
 )

@@ -41,17 +41,17 @@ type FileRestoreOperatorReconciler struct {
 
 // Reconcile is part of the main kubernetes reconciliation loop
 func (r *FileRestoreOperatorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// Fetch the FileRestoreOperator instance
 	fileRestoreOperator := &restorev1alpha1.FileRestoreOperator{}
 	err := r.Get(ctx, req.NamespacedName, fileRestoreOperator)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			log.Info("FileRestoreOperator resource not found. Ignoring since object must be deleted")
+			logger.Info("FileRestoreOperator resource not found. Ignoring since object must be deleted")
 			return ctrl.Result{}, nil
 		}
-		log.Error(err, "Failed to get FileRestoreOperator")
+		logger.Error(err, "Failed to get FileRestoreOperator")
 		return ctrl.Result{}, err
 	}
 
@@ -62,7 +62,7 @@ func (r *FileRestoreOperatorReconciler) Reconcile(ctx context.Context, req ctrl.
 		fileRestoreOperator.Status.ObservedGeneration = fileRestoreOperator.Generation
 
 		if err := r.Status().Update(ctx, fileRestoreOperator); err != nil {
-			log.Error(err, "Failed to update FileRestoreOperator status")
+			logger.Error(err, "Failed to update FileRestoreOperator status")
 			return ctrl.Result{}, err
 		}
 	}

@@ -158,7 +158,7 @@ func selectCipherSuitesAndMinTLSVersion(profile *v1alpha1.TLSSecurityProfile) ([
 		}
 	}
 	if profile.Custom != nil {
-		return profile.Custom.TLSProfileSpec.Ciphers, profile.Custom.TLSProfileSpec.MinTLSVersion
+		return profile.Custom.Ciphers, profile.Custom.MinTLSVersion
 	}
 	return v1alpha1.TLSProfiles[profile.Type].Ciphers, v1alpha1.TLSProfiles[profile.Type].MinTLSVersion
 }
