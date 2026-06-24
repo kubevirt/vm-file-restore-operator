@@ -1,5 +1,7 @@
 # Build the manager binary
-FROM golang:1.26 AS builder
+# Use --platform=$BUILDPLATFORM to run the builder on the native host architecture
+# and cross-compile for the target architecture (much faster than QEMU emulation)
+FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 

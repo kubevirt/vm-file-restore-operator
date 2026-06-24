@@ -78,6 +78,12 @@ GOARCH ?= amd64
 # Buildah-specific variables for multi-arch builds
 BUILDAH_PLATFORM_FLAG ?= --platform $(GOOS)/$(GOARCH)
 BUILDAH_TLS_VERIFY ?= true
+# Extract base image name without tag from IMG
+BUILDAH_IMG_BASE := $(shell echo $(IMG) | sed 's/:[^:/]*$$//')
+# Architecture-specific image tag to avoid overwriting images with different archs
+BUILDAH_ARCH_IMAGE ?= $(BUILDAH_IMG_BASE):$(GOARCH)
+# Local manifest name
+BUILDAH_MANIFEST_LOCAL ?= $(BUILDAH_IMG_BASE):local
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
@@ -187,20 +193,21 @@ docker-push: ## Push docker image with the manager.
 
 .PHONY: buildah-image
 buildah-image: ## Build the image with the manager using buildah.
-	buildah build $(BUILDAH_PLATFORM_FLAG) -t $(IMG) -f Dockerfile .
+	buildah build $(BUILDAH_PLATFORM_FLAG) -t $(BUILDAH_ARCH_IMAGE) -f Dockerfile .
 
 .PHONY: buildah-manifest
 buildah-manifest: buildah-image ## Create a manifest for multi-arch image using buildah.
-	-buildah manifest create $(IMAGE_REGISTRY)/$(REGISTRY_NAMESPACE)/vm-file-restore-operator:local
-	buildah manifest add --arch $(GOARCH) $(IMAGE_REGISTRY)/$(REGISTRY_NAMESPACE)/vm-file-restore-operator:local containers-storage:$(IMG)
+	@buildah manifest exists $(BUILDAH_MANIFEST_LOCAL) || \
+		buildah manifest create $(BUILDAH_MANIFEST_LOCAL)
+	buildah manifest add --arch $(GOARCH) $(BUILDAH_MANIFEST_LOCAL) containers-storage:$(BUILDAH_ARCH_IMAGE)
 
 .PHONY: buildah-manifest-push
 buildah-manifest-push: ## Push the manifest for the image using buildah.
-	buildah manifest push --tls-verify=$(BUILDAH_TLS_VERIFY) --all $(IMAGE_REGISTRY)/$(REGISTRY_NAMESPACE)/vm-file-restore-operator:local docker://$(IMAGE_REGISTRY)/$(REGISTRY_NAMESPACE)/vm-file-restore-operator:$(IMAGE_TAG)
+	buildah manifest push --tls-verify=$(BUILDAH_TLS_VERIFY) --all $(BUILDAH_MANIFEST_LOCAL) docker://$(IMG)
 
 .PHONY: buildah-manifest-clean
 buildah-manifest-clean: ## Clean the manifest for the image using buildah.
-	-buildah manifest rm $(IMAGE_REGISTRY)/$(REGISTRY_NAMESPACE)/vm-file-restore-operator:local
+	-buildah manifest rm $(BUILDAH_MANIFEST_LOCAL)
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -211,8 +218,8 @@ buildah-manifest-clean: ## Clean the manifest for the image using buildah.
 PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 .PHONY: docker-buildx
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
+	# Dockerfile already includes --platform=$BUILDPLATFORM, so just copy it
+	cp Dockerfile Dockerfile.cross
 	- $(CONTAINER_TOOL) buildx create --name vm-file-restore-operator-builder
 	$(CONTAINER_TOOL) buildx use vm-file-restore-operator-builder
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
