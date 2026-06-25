@@ -1,0 +1,8 @@
+#!/bin/bash
+echo "umount $*" >> "$MOCK_CALL_LOG"
+for arg in "$@"; do
+    if [ "$arg" = "-l" ]; then
+        exit "${MOCK_UMOUNT_LAZY_EXIT:-0}"
+    fi
+done
+exit "${MOCK_UMOUNT_EXIT:-0}"
