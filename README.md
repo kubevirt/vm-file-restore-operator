@@ -386,6 +386,9 @@ KUBEVIRT_PROVIDER=k8s-1.37 make cluster-up
 
 # Override number of nodes
 KUBEVIRT_NUM_NODES=3 make cluster-up
+
+# Override wait timeout for KubeVirt/CDI readiness (default: 10m)
+KUBEVIRT_WAIT_TIMEOUT=15m make cluster-up
 ```
 
 **Deploy operator to cluster:**
