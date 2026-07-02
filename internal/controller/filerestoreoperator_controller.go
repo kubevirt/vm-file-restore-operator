@@ -36,9 +36,8 @@ type FileRestoreOperatorReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=filerestoreoperators,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=filerestoreoperators,verbs=get;list;watch
 // +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=filerestoreoperators/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=filerestoreoperators/finalizers,verbs=update
 
 // Reconcile is part of the main kubernetes reconciliation loop
 func (r *FileRestoreOperatorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

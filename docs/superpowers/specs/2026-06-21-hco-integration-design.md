@@ -248,10 +248,10 @@ import (
     operator "kubevirt.io/vm-file-restore-operator/pkg/resources/operator"
 )
 
-//go:embed assets/restore.kubevirt.io_filerestoreoperators.yaml
+//go:embed assets/filefilefilerestore.kubevirt.io_filerestoreoperators.yaml
 var fileRestoreOperatorCRD []byte
 
-//go:embed assets/restore.kubevirt.io_virtualmachinefilerestores.yaml
+//go:embed assets/filefilefilerestore.kubevirt.io_virtualmachinefilerestores.yaml
 var vmFileRestoreCRD []byte
 
 func main() {
@@ -543,8 +543,8 @@ require (
 
 **CSV Generator:**
 - `tools/csv-generator/csv-generator.go` - main binary
-- `tools/csv-generator/assets/restore.kubevirt.io_filerestoreoperators.yaml` - embedded CRD
-- `tools/csv-generator/assets/restore.kubevirt.io_virtualmachinefilerestores.yaml` - embedded CRD
+- `tools/csv-generator/assets/filefilefilerestore.kubevirt.io_filerestoreoperators.yaml` - embedded CRD
+- `tools/csv-generator/assets/filefilefilerestore.kubevirt.io_virtualmachinefilerestores.yaml` - embedded CRD
 - `pkg/resources/operator/csv.go` - CSV generation logic
 
 **TLS Helpers:**
@@ -552,7 +552,7 @@ require (
 
 **Config:**
 - `config/samples/restore_v1alpha1_filerestoreoperator.yaml` - default CR
-- `config/crd/bases/restore.kubevirt.io_filerestoreoperators.yaml` - generated CRD
+- `config/crd/bases/filefilefilerestore.kubevirt.io_filerestoreoperators.yaml` - generated CRD
 - `config/rbac/filerestoreoperator_editor_role.yaml` - generated RBAC
 - `config/rbac/filerestoreoperator_viewer_role.yaml` - generated RBAC
 
@@ -607,7 +607,7 @@ resources:
 ```yaml
 # Add FileRestoreOperator permissions
 - apiGroups:
-  - restore.kubevirt.io
+  - filefilefilerestore.kubevirt.io
   resources:
   - filerestoreoperators
   verbs:
@@ -619,7 +619,7 @@ resources:
   - update
   - watch
 - apiGroups:
-  - restore.kubevirt.io
+  - filefilefilerestore.kubevirt.io
   resources:
   - filerestoreoperators/status
   verbs:
@@ -630,7 +630,7 @@ resources:
 
 **config/samples/restore_v1alpha1_filerestoreoperator.yaml:**
 ```yaml
-apiVersion: restore.kubevirt.io/v1alpha1
+apiVersion: filefilefilerestore.kubevirt.io/v1alpha1
 kind: FileRestoreOperator
 metadata:
   name: vm-file-restore-operator
@@ -681,7 +681,7 @@ csv-generator --csv-version=1.0.0 --operator-image=<image> --dump-crds > bundle.
 
 # HCO creates FileRestoreOperator CR
 kubectl apply -f - <<EOF
-apiVersion: restore.kubevirt.io/v1alpha1
+apiVersion: filefilefilerestore.kubevirt.io/v1alpha1
 kind: FileRestoreOperator
 metadata:
   name: vm-file-restore-operator
@@ -706,7 +706,7 @@ EOF
 **For existing deployments:**
 ```bash
 # 1. Apply new CRD
-kubectl apply -f config/crd/bases/restore.kubevirt.io_filerestoreoperators.yaml
+kubectl apply -f config/crd/bases/filefilefilerestore.kubevirt.io_filerestoreoperators.yaml
 
 # 2. Create default FileRestoreOperator CR
 kubectl apply -f config/samples/restore_v1alpha1_filerestoreoperator.yaml

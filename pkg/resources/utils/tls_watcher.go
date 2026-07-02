@@ -129,9 +129,19 @@ func (m *ManagedTLSWatcher) GetTLSConfig(ctx context.Context) *cryptoConfig {
 		return m.defaultConfig
 	}
 
+	// List all FileRestoreOperator CRs in the operator's namespace
+	// NOTE: FileRestoreOperator is namespaced, and typically there is only one CR
+	// per namespace (created by HCO or user). In standalone mode, the operator
+	// should be deployed with a single FileRestoreOperator CR in its namespace.
 	list := &v1alpha1.FileRestoreOperatorList{}
 	if err := c.List(ctx, list); err != nil || len(list.Items) == 0 {
 		return m.defaultConfig
+	}
+
+	// Use first CR found. In production, there should be exactly one CR per namespace.
+	// If multiple CRs exist, the first one (by listing order) determines TLS policy.
+	if len(list.Items) > 1 {
+		log.Info("Multiple FileRestoreOperator CRs found, using first one for TLS config", "count", len(list.Items))
 	}
 
 	return cryptoConfigFromSpec(list.Items[0].Spec.TLSSecurityProfile)
