@@ -140,7 +140,7 @@ cluster-down: ## Tear down kubevirtci development cluster
 .PHONY: cluster-kubeconfig
 cluster-kubeconfig: ## Print kubeconfig export command for kubevirtci cluster
 	@test -d ./kubevirtci || { echo "Error: kubevirtci not found. Run 'make cluster-up' first." >&2; exit 1; }
-	@echo "export KUBECONFIG=$$(./kubevirtci/cluster-up/kubeconfig.sh)"
+	@echo "export KUBECONFIG=$$(source ./hack/config.sh && ./kubevirtci/cluster-up/kubeconfig.sh)"
 
 .PHONY: cluster-sync
 cluster-sync: ## Deploy the operator to kubevirtci cluster

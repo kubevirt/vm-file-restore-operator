@@ -4,6 +4,11 @@
 
 set -e
 
+if [ -z "${KUBECONFIG}" ]; then
+    echo "Error: KUBECONFIG is not set. Run 'eval \"\$(make cluster-kubeconfig)\"' first." >&2
+    exit 1
+fi
+
 : "${IMG:=quay.io/kubevirt/vm-file-restore-operator:latest}"
 
 echo "Deploying operator with image: ${IMG}"
