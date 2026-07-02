@@ -154,6 +154,8 @@ func main() {
 				config.CipherSuites = cc.CipherSuites
 				config.MinVersion = cc.MinVersion
 			}
+			// Clear GetConfigForClient to prevent re-entry/recursion
+			config.GetConfigForClient = nil
 			return config, nil
 		}
 	}

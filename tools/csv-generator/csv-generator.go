@@ -20,6 +20,7 @@ import (
 	_ "embed"
 	"flag"
 	"fmt"
+	"os"
 
 	"github.com/ghodss/yaml"
 	"kubevirt.io/vm-file-restore-operator/pkg/resources/operator"
@@ -46,6 +47,28 @@ var fileRestoreOperatorsCRD []byte
 func main() {
 	flag.Parse()
 
+	// Validate required flags
+	if *csvVersion == "" {
+		fmt.Fprintln(os.Stderr, "Error: --csv-version is required")
+		flag.Usage()
+		os.Exit(1)
+	}
+	if *namespace == "" {
+		fmt.Fprintln(os.Stderr, "Error: --namespace is required")
+		flag.Usage()
+		os.Exit(1)
+	}
+	if *operatorImage == "" {
+		fmt.Fprintln(os.Stderr, "Error: --operator-image is required")
+		flag.Usage()
+		os.Exit(1)
+	}
+	if *operatorVersion == "" {
+		fmt.Fprintln(os.Stderr, "Error: --operator-version is required")
+		flag.Usage()
+		os.Exit(1)
+	}
+
 	data := operator.ClusterServiceVersionData{
 		CsvVersion:         *csvVersion,
 		ReplacesCsvVersion: *replacesCsvVersion,
@@ -59,12 +82,14 @@ func main() {
 
 	csv, err := operator.NewClusterServiceVersion(&data)
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "Error creating CSV: %v\n", err)
+		os.Exit(1)
 	}
 
 	yamlBytes, err := yaml.Marshal(csv)
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "Error marshaling CSV to YAML: %v\n", err)
+		os.Exit(1)
 	}
 
 	fmt.Println("---")

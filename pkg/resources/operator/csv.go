@@ -17,6 +17,8 @@ limitations under the License.
 package operator
 
 import (
+	"fmt"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -38,6 +40,17 @@ type ClusterServiceVersionData struct {
 }
 
 func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.ClusterServiceVersion, error) {
+	// Validate required fields
+	if data.CsvVersion == "" {
+		return nil, fmt.Errorf("csv version must not be empty")
+	}
+	if data.Namespace == "" {
+		return nil, fmt.Errorf("namespace must not be empty")
+	}
+	if data.OperatorImage == "" {
+		return nil, fmt.Errorf("operator image must not be empty")
+	}
+
 	csv := &csvv1alpha1.ClusterServiceVersion{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "ClusterServiceVersion",
@@ -174,6 +187,11 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 									Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 								},
 								{
+									APIGroups: []string{""},
+									Resources: []string{"secrets"},
+									Verbs:     []string{"create", "get", "list", "watch"},
+								},
+								{
 									APIGroups: []string{"coordination.k8s.io"},
 									Resources: []string{"leases"},
 									Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
@@ -223,7 +241,17 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 								{
 									APIGroups: []string{"kubevirt.io"},
 									Resources: []string{"virtualmachines"},
+									Verbs:     []string{"get", "list", "watch", "patch", "update"},
+								},
+								{
+									APIGroups: []string{"kubevirt.io"},
+									Resources: []string{"virtualmachineinstances"},
 									Verbs:     []string{"get", "list", "watch"},
+								},
+								{
+									APIGroups: []string{"cdi.kubevirt.io"},
+									Resources: []string{"datavolumes"},
+									Verbs:     []string{"create", "delete", "get", "list"},
 								},
 								{
 									APIGroups: []string{"snapshot.storage.k8s.io"},

@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -52,7 +53,7 @@ func (r *FileRestoreOperatorReconciler) Reconcile(ctx context.Context, req ctrl.
 			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "Failed to get FileRestoreOperator")
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("failed to get FileRestoreOperator %s: %w", req.NamespacedName, err)
 	}
 
 	// Update status if phase or generation changed
@@ -63,7 +64,7 @@ func (r *FileRestoreOperatorReconciler) Reconcile(ctx context.Context, req ctrl.
 
 		if err := r.Status().Update(ctx, fileRestoreOperator); err != nil {
 			logger.Error(err, "Failed to update FileRestoreOperator status")
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("failed to update FileRestoreOperator %s status: %w", req.NamespacedName, err)
 		}
 	}
 

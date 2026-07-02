@@ -6,7 +6,8 @@
 VERSION ?= 0.0.1
 
 # PREV_VERSION defines the previous version that this release replaces
-PREV_VERSION ?= 0.0.0
+# Leave empty for first releases to avoid invalid upgrade edges
+PREV_VERSION ?=
 
 # NAMESPACE defines the namespace for the operator
 NAMESPACE ?= file-restore

@@ -44,6 +44,7 @@ type FileRestoreOperatorSpec struct {
 
 // FileRestoreOperatorStatus defines the observed state of FileRestoreOperator
 type FileRestoreOperatorStatus struct {
+	// Embed SDK status which includes Phase, Conditions, OperatorVersion, etc.
 	sdkapi.Status `json:",inline"`
 
 	// ObservedGeneration reflects the generation most recently observed by the controller

@@ -160,15 +160,27 @@ func selectCipherSuitesAndMinTLSVersion(profile *v1alpha1.TLSSecurityProfile) ([
 	if profile.Custom != nil {
 		return profile.Custom.Ciphers, profile.Custom.MinTLSVersion
 	}
-	return v1alpha1.TLSProfiles[profile.Type].Ciphers, v1alpha1.TLSProfiles[profile.Type].MinTLSVersion
+	// Validate profile.Type exists in TLSProfiles map
+	tlsProfile, ok := v1alpha1.TLSProfiles[profile.Type]
+	if !ok {
+		// Fall back to Intermediate if type is unknown
+		tlsProfile = v1alpha1.TLSProfiles[v1alpha1.TLSProfileIntermediateType]
+	}
+	return tlsProfile.Ciphers, tlsProfile.MinTLSVersion
 }
 
 func cipherSuitesIDs(names []string) []uint16 {
 	var ids []uint16
+	var unknown []string
 	for _, name := range names {
 		if id, ok := cipherNameToID[name]; ok {
 			ids = append(ids, id)
+		} else {
+			unknown = append(unknown, name)
 		}
+	}
+	if len(unknown) > 0 {
+		log.Info("unknown TLS cipher suites ignored", "ciphers", unknown)
 	}
 	return ids
 }
