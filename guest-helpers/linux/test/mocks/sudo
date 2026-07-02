@@ -1,0 +1,3 @@
+#!/bin/bash
+echo "sudo $*" >> "$MOCK_CALL_LOG"
+exec "$@"

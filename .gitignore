@@ -34,3 +34,5 @@ kubevirtci/
 # Kustomize modifies this file when building (kustomize edit set image)
 config/manager/kustomization.yaml
 
+# Test
+testResults.xml

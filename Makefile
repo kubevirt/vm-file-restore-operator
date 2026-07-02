@@ -158,6 +158,30 @@ test-e2e: manifests generate fmt vet ## Run e2e tests (requires kubevirtci clust
 	@echo "NOTE: Ensure kubevirtci cluster is running with 'make cluster-up'"
 	go test ./test/e2e/ -v -ginkgo.v -timeout=30m
 
+##@ Script Tests
+
+CONTAINER_ENGINE ?= $(CONTAINER_TOOL)
+BATS_IMAGE ?= bats/bats:1.13.0
+# :Z relabels for SELinux; use empty value on Docker Desktop (macOS/Windows)
+VOLUME_OPTS ?= :Z
+
+.PHONY: test-scripts
+test-scripts: test-scripts-linux ## Run guest-helper script tests
+
+.PHONY: test-scripts-linux
+test-scripts-linux: ## Run BATS tests for Linux guest helper (containerized)
+	$(CONTAINER_ENGINE) run --rm \
+		-v $(shell pwd):/workspace$(VOLUME_OPTS) \
+		-w /workspace \
+		$(BATS_IMAGE) \
+		guest-helpers/linux/test/filerestore.bats
+
+.PHONY: shellcheck
+shellcheck: ## Run shellcheck on guest helper scripts
+	shellcheck guest-helpers/linux/filerestore.sh guest-helpers/linux/setup.sh
+
+##@ Linting
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run

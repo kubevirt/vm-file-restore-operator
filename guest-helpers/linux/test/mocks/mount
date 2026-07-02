@@ -1,0 +1,3 @@
+#!/bin/bash
+echo "mount $*" >> "$MOCK_CALL_LOG"
+exit "${MOCK_MOUNT_EXIT:-0}"
