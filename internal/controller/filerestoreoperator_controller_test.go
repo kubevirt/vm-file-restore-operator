@@ -94,5 +94,77 @@ var _ = Describe("FileRestoreOperator Controller", func() {
 			// Verify ObservedGeneration is set
 			Expect(filerestoreoperator.Status.ObservedGeneration).To(Equal(filerestoreoperator.Generation))
 		})
+
+		It("should handle NotFound resource gracefully", func() {
+			By("Reconciling a non-existent resource")
+			controllerReconciler := &FileRestoreOperatorReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      "non-existent",
+					Namespace: "default",
+				},
+			})
+			// Should not return error for NotFound
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should be idempotent when already reconciled", func() {
+			By("Creating a FileRestoreOperator resource")
+			resource := &restorev1alpha1.FileRestoreOperator{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-idempotency",
+					Namespace: "default",
+				},
+				Spec: restorev1alpha1.FileRestoreOperatorSpec{},
+			}
+			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+
+			controllerReconciler := &FileRestoreOperatorReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// First reconcile
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      "test-idempotency",
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Get current state
+			var firstReconcile restorev1alpha1.FileRestoreOperator
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "test-idempotency",
+				Namespace: "default",
+			}, &firstReconcile)).To(Succeed())
+
+			firstGeneration := firstReconcile.Status.ObservedGeneration
+			Expect(firstReconcile.Status.Phase).To(Equal(sdkapi.PhaseDeployed))
+
+			// Second reconcile without changes - should be no-op
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      "test-idempotency",
+					Namespace: "default",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify status unchanged
+			var secondReconcile restorev1alpha1.FileRestoreOperator
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      "test-idempotency",
+				Namespace: "default",
+			}, &secondReconcile)).To(Succeed())
+
+			Expect(secondReconcile.Status.Phase).To(Equal(sdkapi.PhaseDeployed))
+			Expect(secondReconcile.Status.ObservedGeneration).To(Equal(firstGeneration))
+		})
 	})
 })

@@ -61,6 +61,14 @@ func TestCryptoConfigFromSpec(t *testing.T) {
 			wantMin: tls.VersionTLS13,
 			wantLen: 1,
 		},
+		{
+			name: "Unknown profile type falls back to Intermediate",
+			profile: &v1alpha1.TLSSecurityProfile{
+				Type: "UnknownType",
+			},
+			wantMin: tls.VersionTLS12,
+			wantLen: 9, // Falls back to Intermediate
+		},
 	}
 
 	for _, tt := range tests {
@@ -81,12 +89,57 @@ func TestTLSVersionToUint16(t *testing.T) {
 		{v1alpha1.VersionTLS11, tls.VersionTLS11},
 		{v1alpha1.VersionTLS12, tls.VersionTLS12},
 		{v1alpha1.VersionTLS13, tls.VersionTLS13},
+		{"unknown-version", tls.VersionTLS12}, // Falls back to TLS 1.2
 	}
 
 	for _, tt := range tests {
 		t.Run(string(tt.version), func(t *testing.T) {
 			got := tlsVersionToUint16(tt.version)
 			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestCipherSuitesIDs(t *testing.T) {
+	tests := []struct {
+		name    string
+		ciphers []string
+		wantLen int
+		wantIDs []uint16
+	}{
+		{
+			name:    "Valid cipher",
+			ciphers: []string{"ECDHE-RSA-AES128-GCM-SHA256"},
+			wantLen: 1,
+			wantIDs: []uint16{tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
+		},
+		{
+			name:    "Multiple valid ciphers",
+			ciphers: []string{"ECDHE-RSA-AES128-GCM-SHA256", "ECDHE-RSA-AES256-GCM-SHA384"},
+			wantLen: 2,
+			wantIDs: []uint16{tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384},
+		},
+		{
+			name:    "Unknown cipher dropped",
+			ciphers: []string{"UNKNOWN-CIPHER"},
+			wantLen: 0,
+			wantIDs: []uint16{},
+		},
+		{
+			name:    "Mixed valid and unknown ciphers",
+			ciphers: []string{"ECDHE-RSA-AES128-GCM-SHA256", "UNKNOWN-CIPHER", "ECDHE-RSA-AES256-GCM-SHA384"},
+			wantLen: 2,
+			wantIDs: []uint16{tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256, tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := cipherSuitesIDs(tt.ciphers)
+			assert.Equal(t, tt.wantLen, len(got))
+			if len(tt.wantIDs) > 0 {
+				assert.Equal(t, tt.wantIDs, got)
+			}
 		})
 	}
 }
