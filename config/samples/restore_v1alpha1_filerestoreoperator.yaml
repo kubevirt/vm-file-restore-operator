@@ -1,0 +1,9 @@
+apiVersion: filerestore.kubevirt.io/v1alpha1
+kind: FileRestoreOperator
+metadata:
+  name: vm-file-restore-operator
+  namespace: file-restore
+spec:
+  imagePullPolicy: IfNotPresent
+  infra: {}
+  workloads: {}

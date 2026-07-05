@@ -22,6 +22,7 @@ This operator simplifies disaster recovery and file-level backup scenarios for v
 - **SSH-Based Execution**: Secure SSH access for executing restore commands in guest OS
 - **Robust Error Handling**: Automatic retries, timeouts, and detailed error reporting
 - **Idempotent Operations**: Safe to retry, handles partial failures gracefully
+- **HCO Integration**: Can be managed by HyperConverged Cluster Operator with TLS security profiles
 
 ## Architecture
 

@@ -44,6 +44,7 @@ import (
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 	"kubevirt.io/vm-file-restore-operator/internal/controller"
+	"kubevirt.io/vm-file-restore-operator/pkg/resources/utils"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -111,6 +112,9 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
+	// Create TLS watcher for dynamic TLS configuration
+	managedTLSWatcher := utils.NewManagedTLSWatcher()
+
 	// Create watchers for metrics and webhooks certificates
 	var metricsCertWatcher, webhookCertWatcher *certwatcher.CertWatcher
 
@@ -140,6 +144,22 @@ func main() {
 		TLSOpts: webhookTLSOpts,
 	})
 
+	// Configure dynamic TLS configuration callback
+	cryptoPolicyOpt := func(c *tls.Config) {
+		c.GetConfigForClient = func(t *tls.ClientHelloInfo) (*tls.Config, error) {
+			config := c.Clone()
+			if managedTLSWatcher != nil {
+				ctx := t.Context()
+				cc := managedTLSWatcher.GetTLSConfig(ctx)
+				config.CipherSuites = cc.CipherSuites
+				config.MinVersion = cc.MinVersion
+			}
+			// Clear GetConfigForClient to prevent re-entry/recursion
+			config.GetConfigForClient = nil
+			return config, nil
+		}
+	}
+
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
 	// More info:
 	// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/metrics/server
@@ -147,7 +167,7 @@ func main() {
 	metricsServerOptions := metricsserver.Options{
 		BindAddress:   metricsAddr,
 		SecureServing: secureMetrics,
-		TLSOpts:       tlsOpts,
+		TLSOpts:       append(tlsOpts, cryptoPolicyOpt),
 	}
 
 	if secureMetrics {
@@ -204,6 +224,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Set cache on TLS watcher and add as runnable
+	managedTLSWatcher.SetCache(mgr.GetCache())
+	if err := mgr.Add(managedTLSWatcher); err != nil {
+		setupLog.Error(err, "unable to add ManagedTLSWatcher")
+		os.Exit(1)
+	}
+
 	// Generate SSH keypair on startup with retries
 	// Use a direct client (not cached) since the manager hasn't started yet
 	operatorNamespace := os.Getenv("OPERATOR_NAMESPACE")
@@ -244,6 +271,14 @@ func main() {
 		OperatorNamespace: operatorNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "VirtualMachineFileRestore")
+		os.Exit(1)
+	}
+
+	if err := (&controller.FileRestoreOperatorReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "FileRestoreOperator")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

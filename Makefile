@@ -5,6 +5,13 @@
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
 VERSION ?= 0.0.1
 
+# PREV_VERSION defines the previous version that this release replaces
+# Leave empty for first releases to avoid invalid upgrade edges
+PREV_VERSION ?=
+
+# NAMESPACE defines the namespace for the operator
+NAMESPACE ?= file-restore
+
 # CHANNELS define the bundle channels used in the bundle.
 # Add a new line here if you would like to change its default config. (E.g CHANNELS = "candidate,fast,stable")
 # To re-generate a bundle for other specific channels without changing the standard setup, you can:
@@ -232,6 +239,18 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
+.PHONY: csv-generator
+csv-generator: ## Build csv-generator binary locally
+	go build -o bin/csv-generator ./tools/csv-generator/
+
+.PHONY: csv-assets
+csv-assets: manifests ## Prepare CRD assets for csv-generator
+	mkdir -p tools/csv-generator/assets
+	cp config/crd/bases/filerestore.kubevirt.io_filerestoreoperators.yaml \
+	   tools/csv-generator/assets/filerestore.kubevirt.io_filerestoreoperators.yaml
+	cp config/crd/bases/filerestore.kubevirt.io_virtualmachinefilerestores.yaml \
+	   tools/csv-generator/assets/filerestore.kubevirt.io_virtualmachinefilerestores.yaml
+
 ##@ Deployment
 
 ifndef ignore-not-found
@@ -341,11 +360,15 @@ endif
 endif
 
 .PHONY: bundle
-bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
-	$(OPERATOR_SDK) generate kustomize manifests -q
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
-	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
-	$(OPERATOR_SDK) bundle validate ./bundle
+bundle: manifests kustomize csv-generator csv-assets ## Generate bundle manifests using csv-generator
+	mkdir -p bundle/manifests
+	./bin/csv-generator \
+		--csv-version=$(VERSION) \
+		--replaces-csv-version=$(PREV_VERSION) \
+		--namespace=$(NAMESPACE) \
+		--operator-image=$(IMG) \
+		--operator-version=$(VERSION) \
+		--dump-crds > bundle/manifests/vm-file-restore-operator.v$(VERSION).yaml
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.

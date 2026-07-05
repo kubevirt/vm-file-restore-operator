@@ -77,6 +77,11 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("kubectl", "get", "crd", "virtualmachinefilerestores.filerestore.kubevirt.io")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "CRDs not found. Run 'make cluster-sync' first.")
+
+		By("verifying FileRestoreOperator CRD is installed")
+		cmd = exec.Command("kubectl", "get", "crd", "filerestoreoperators.filerestore.kubevirt.io")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "FileRestoreOperator CRD not found. Run 'make cluster-sync' first.")
 	})
 
 	// After all tests, clean up test resources but leave operator running
@@ -683,6 +688,72 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(err).To(HaveOccurred(), "Volume still mounted after CR deletion")
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 			_, _ = fmt.Fprintf(GinkgoWriter, "Volume successfully unmounted\n")
+		})
+	})
+
+	Context("FileRestoreOperator", func() {
+		It("should create and reconcile FileRestoreOperator CR", func() {
+			By("creating FileRestoreOperator CR")
+			cmd := exec.Command("kubectl", "apply", "-f",
+				"config/samples/restore_v1alpha1_filerestoreoperator.yaml")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(),
+				"Failed to create FileRestoreOperator CR")
+
+			By("verifying FileRestoreOperator CR exists")
+			verifyFileRestoreOperatorExists := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "filerestoreoperator",
+					"vm-file-restore-operator", "-n", namespace)
+				_, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred(),
+					"FileRestoreOperator 'vm-file-restore-operator' not found in namespace '%s'", namespace)
+			}
+			Eventually(verifyFileRestoreOperatorExists).Should(Succeed())
+
+			By("verifying FileRestoreOperator status phase is updated")
+			verifyFileRestoreOperatorPhase := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "filerestoreoperator",
+					"vm-file-restore-operator", "-n", namespace,
+					"-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(Equal("Deployed"),
+					"Expected FileRestoreOperator phase to be 'Deployed', got '%s'", output)
+			}
+			Eventually(verifyFileRestoreOperatorPhase).Should(Succeed())
+
+			By("verifying FileRestoreOperator ObservedGeneration is set")
+			verifyObservedGeneration := func(g Gomega) {
+				// Get the resource's Generation field
+				cmd := exec.Command("kubectl", "get", "filerestoreoperator",
+					"vm-file-restore-operator", "-n", namespace,
+					"-o", "jsonpath={.metadata.generation}")
+				generation, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				// Get the status's ObservedGeneration field
+				cmd = exec.Command("kubectl", "get", "filerestoreoperator",
+					"vm-file-restore-operator", "-n", namespace,
+					"-o", "jsonpath={.status.observedGeneration}")
+				observedGeneration, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				g.Expect(observedGeneration).To(Equal(generation),
+					"Expected ObservedGeneration to match Generation")
+			}
+			Eventually(verifyObservedGeneration).Should(Succeed())
+		})
+
+		It("should perform restore with FileRestoreOperator present", func() {
+			By("verifying that the default FileRestoreOperator CR does not interfere with restore operations")
+			// Verify the FileRestoreOperator is still running and in Deployed state
+			cmd := exec.Command("kubectl", "get", "filerestoreoperator",
+				"vm-file-restore-operator", "-n", namespace,
+				"-o", "jsonpath={.status.phase}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(Equal("Deployed"),
+				"FileRestoreOperator should remain in Deployed state")
 		})
 	})
 })
