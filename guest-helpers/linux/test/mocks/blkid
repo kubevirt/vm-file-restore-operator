@@ -1,0 +1,28 @@
+#!/bin/bash
+echo "blkid $*" >> "$MOCK_CALL_LOG"
+# Extract the device path (last argument)
+device="${@: -1}"
+# MOCK_BLKID_DEVICES is a semicolon-separated list of "device=fstype" mappings
+# e.g., "/dev/sdb1=ext4;/dev/sdb=" means sdb1 has ext4, sdb has no filesystem
+if [ -n "${MOCK_BLKID_DEVICES:-}" ]; then
+    IFS=';' read -ra entries <<< "$MOCK_BLKID_DEVICES"
+    for entry in "${entries[@]}"; do
+        dev="${entry%%=*}"
+        fstype="${entry#*=}"
+        if [ "$device" = "$dev" ]; then
+            if [ -n "$fstype" ]; then
+                echo "$fstype"
+                exit 0
+            else
+                exit 1
+            fi
+        fi
+    done
+    exit 1
+fi
+# Simple mode: single output for all devices
+if [ -n "${MOCK_BLKID_OUTPUT:-}" ]; then
+    echo "${MOCK_BLKID_OUTPUT}"
+    exit 0
+fi
+exit "${MOCK_BLKID_EXIT:-1}"

@@ -27,14 +27,16 @@ if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
         exit 1
     fi
     # Extract arguments from SSH_ORIGINAL_COMMAND
-    # Split remaining arguments on whitespace (no eval — avoids shell injection)
+    # Split on whitespace (no eval — avoids shell injection).
+    # Note: arguments containing spaces or quotes are not supported via SSH.
     read -ra _args <<< "${SSH_ORIGINAL_COMMAND#/usr/local/bin/filerestore.sh}" || true
     set -- "${_args[@]}"
     unset SSH_ORIGINAL_COMMAND  # Clear to prevent loops
 fi
 
 # Re-execute with sudo if not running as root (mount/umount require root)
-if [ "$EUID" -ne 0 ]; then
+# FILERESTORE_SKIP_ROOT_CHECK allows running under BATS without real root ($EUID is readonly)
+if [ "${FILERESTORE_SKIP_ROOT_CHECK:-}" != "1" ] && [ "$EUID" -ne 0 ]; then
     exec sudo "$0" "$@"
 fi
 
@@ -62,6 +64,12 @@ unmount_and_cleanup() {
     log "WARNING: Could not remove $mnt"
 }
 
+# Allow sourcing for unit tests without executing main logic
+if [ "${FILERESTORE_SOURCED:-}" = "1" ]; then
+    # shellcheck disable=SC2317
+    return 0 2>/dev/null || true
+fi
+
 if [ $# -lt 1 ]; then
     usage
 fi
@@ -80,14 +88,17 @@ SOURCE_PATH=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --serial)
+            [ -n "${2:-}" ] || { log_err "$1 requires a value"; usage; }
             SERIAL="$2"
             shift 2
             ;;
         --mount-path)
+            [ -n "${2:-}" ] || { log_err "$1 requires a value"; usage; }
             MOUNT_PATH="$2"
             shift 2
             ;;
         --source-path)
+            [ -n "${2:-}" ] || { log_err "$1 requires a value"; usage; }
             SOURCE_PATH="$2"
             shift 2
             ;;
