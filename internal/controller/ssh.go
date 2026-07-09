@@ -41,6 +41,28 @@ func ConnectSSH(ip string, privateKey []byte) (*SSHClient, error) {
 		},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // VMs can be recreated with same IP
 		Timeout:         10 * time.Second,
+		// FIPS 140-2 compliant algorithms only
+		Config: ssh.Config{
+			KeyExchanges: []string{
+				"ecdh-sha2-nistp256",
+				"ecdh-sha2-nistp384",
+				"ecdh-sha2-nistp521",
+				"diffie-hellman-group14-sha256",
+			},
+			Ciphers: []string{
+				"aes128-gcm@openssh.com",
+				"aes256-gcm@openssh.com",
+				"aes128-ctr",
+				"aes192-ctr",
+				"aes256-ctr",
+			},
+			MACs: []string{
+				"hmac-sha2-256-etm@openssh.com",
+				"hmac-sha2-256",
+				"hmac-sha2-512-etm@openssh.com",
+				"hmac-sha2-512",
+			},
+		},
 	}
 
 	// Dial the SSH connection
