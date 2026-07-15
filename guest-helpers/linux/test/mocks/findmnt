@@ -1,0 +1,4 @@
+#!/bin/bash
+echo "findmnt $*" >> "$MOCK_CALL_LOG"
+echo "${MOCK_FINDMNT_OUTPUT:-}"
+exit "${MOCK_FINDMNT_EXIT:-0}"

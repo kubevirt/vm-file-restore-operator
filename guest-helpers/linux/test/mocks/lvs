@@ -1,0 +1,4 @@
+#!/bin/bash
+echo "lvs $*" >> "$MOCK_CALL_LOG"
+echo "${MOCK_LVS_OUTPUT:-}"
+exit "${MOCK_LVS_EXIT:-0}"

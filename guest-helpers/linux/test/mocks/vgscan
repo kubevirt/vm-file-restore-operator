@@ -1,0 +1,3 @@
+#!/bin/bash
+echo "vgscan $*" >> "$MOCK_CALL_LOG"
+exit "${MOCK_VGSCAN_EXIT:-0}"

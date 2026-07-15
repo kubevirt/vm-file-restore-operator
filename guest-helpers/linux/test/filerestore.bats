@@ -15,8 +15,7 @@ load 'test_helper'
 }
 
 @test "SSH: accepts valid command and extracts args" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext4"
+    setup_device_mock "ext4"
     export SSH_ORIGINAL_COMMAND="/usr/local/bin/filerestore.sh restore --serial ABC123 --mount-path $TEST_MOUNT_DIR"
     run "$SCRIPT"
     assert_success
@@ -138,6 +137,15 @@ load 'test_helper'
     assert_output --partial "Lazy unmount of $TEST_MOUNT_DIR also failed"
 }
 
+@test "cleanup: sync timeout does not block cleanup" {
+    export MOCK_TIMEOUT_EXIT=124
+    run "$SCRIPT" cleanup --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    assert_output --partial "sync timed out after 10s, proceeding with unmount"
+    grep -q "^timeout 10 sync" "$MOCK_CALL_LOG"
+    grep -q "^umount" "$MOCK_CALL_LOG"
+}
+
 # =============================================================================
 # Sourcing guard
 # =============================================================================
@@ -153,8 +161,7 @@ load 'test_helper'
 # =============================================================================
 
 @test "device: found by serial number" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext4"
+    setup_device_mock "ext4"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
     assert_success
     assert_output --partial "Found device: /dev/sdb"
@@ -169,7 +176,7 @@ load 'test_helper'
 }
 
 @test "device: whole disk with partitioned filesystem" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
+    setup_device_mock ""
     export MOCK_LSBLK_FSTYPE_OUTPUT="sdb1 ext4"
     export MOCK_BLKID_DEVICES="/dev/sdb=;/dev/sdb1=ext4"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
@@ -178,7 +185,7 @@ load 'test_helper'
 }
 
 @test "device: partition found but blkid cannot determine fstype exits 1" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
+    setup_device_mock ""
     export MOCK_LSBLK_FSTYPE_OUTPUT="sdb1 ext4"
     export MOCK_BLKID_DEVICES="/dev/sdb=;/dev/sdb1="
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
@@ -188,8 +195,7 @@ load 'test_helper'
 }
 
 @test "device: whole disk, no partition has filesystem exits 1" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT=""
+    setup_device_mock ""
     export MOCK_BLKID_EXIT=1
     export MOCK_LSBLK_FSTYPE_OUTPUT=""
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
@@ -199,8 +205,7 @@ load 'test_helper'
 }
 
 @test "device: direct filesystem on device" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="xfs"
+    setup_device_mock "xfs"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
     assert_success
     assert_output --partial "Found device: /dev/sdb"
@@ -211,8 +216,7 @@ load 'test_helper'
 # =============================================================================
 
 @test "mount-opts: ext4 uses ro,noload" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext4"
+    setup_device_mock "ext4"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
     assert_success
     assert_output --partial "with options: ro,noload"
@@ -220,16 +224,14 @@ load 'test_helper'
 }
 
 @test "mount-opts: ext3 uses ro,noload" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext3"
+    setup_device_mock "ext3"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
     assert_success
     assert_output --partial "with options: ro,noload"
 }
 
 @test "mount-opts: xfs uses ro,norecovery,nouuid" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="xfs"
+    setup_device_mock "xfs"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
     assert_success
     assert_output --partial "with options: ro,norecovery,nouuid"
@@ -237,8 +239,7 @@ load 'test_helper'
 }
 
 @test "mount-opts: other filesystem uses ro only" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ntfs"
+    setup_device_mock "ntfs"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
     assert_success
     assert_output --partial "with options: ro"
@@ -250,8 +251,7 @@ load 'test_helper'
 # =============================================================================
 
 @test "mount: failure exits 1" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext4"
+    setup_device_mock "ext4"
     export MOCK_MOUNT_EXIT=1
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
     assert_failure
@@ -264,16 +264,14 @@ load 'test_helper'
 # =============================================================================
 
 @test "manual: no --source-path exits 0 after mount" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext4"
+    setup_device_mock "ext4"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
     assert_success
     assert_output --partial "Volume mounted at $TEST_MOUNT_DIR for manual restore operations"
 }
 
 @test "manual: volume is not unmounted after mount" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext4"
+    setup_device_mock "ext4"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
     assert_success
     ! grep -q "^umount" "$MOCK_CALL_LOG"
@@ -285,8 +283,7 @@ load 'test_helper'
 # =============================================================================
 
 @test "auto: source path not found exits 1" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext4"
+    setup_device_mock "ext4"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path /data/file.txt
     assert_failure
     [ "$status" -eq 1 ]
@@ -294,8 +291,7 @@ load 'test_helper'
 }
 
 @test "auto: source path not found triggers cleanup" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext4"
+    setup_device_mock "ext4"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path /data/file.txt
     assert_failure
     grep -q "^sync" "$MOCK_CALL_LOG"
@@ -303,31 +299,25 @@ load 'test_helper'
 }
 
 @test "auto: rsync succeeds exits 0" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext4"
-    mkdir -p "$TEST_MOUNT_DIR/./data"
-    touch "$TEST_MOUNT_DIR/./data/file.txt"
+    setup_device_mock "ext4"
+    create_test_source_file "/data/file.txt"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path /data/file.txt
     assert_success
     assert_output --partial "Automatic restore of /data/file.txt completed successfully"
 }
 
 @test "auto: rsync called with correct arguments" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext4"
-    mkdir -p "$TEST_MOUNT_DIR/./data"
-    touch "$TEST_MOUNT_DIR/./data/file.txt"
+    setup_device_mock "ext4"
+    create_test_source_file "/data/file.txt"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path /data/file.txt
     assert_success
     grep -q "rsync -avR $TEST_MOUNT_DIR/./data/file.txt /" "$MOCK_CALL_LOG"
 }
 
 @test "auto: rsync failure exits 1" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext4"
+    setup_device_mock "ext4"
     export MOCK_RSYNC_EXIT=1
-    mkdir -p "$TEST_MOUNT_DIR/./data"
-    touch "$TEST_MOUNT_DIR/./data/file.txt"
+    create_test_source_file "/data/file.txt"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path /data/file.txt
     assert_failure
     [ "$status" -eq 1 ]
@@ -335,11 +325,9 @@ load 'test_helper'
 }
 
 @test "auto: rsync failure triggers cleanup" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext4"
+    setup_device_mock "ext4"
     export MOCK_RSYNC_EXIT=1
-    mkdir -p "$TEST_MOUNT_DIR/./data"
-    touch "$TEST_MOUNT_DIR/./data/file.txt"
+    create_test_source_file "/data/file.txt"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path /data/file.txt
     assert_failure
     grep -q "^sync" "$MOCK_CALL_LOG"
@@ -347,12 +335,341 @@ load 'test_helper'
 }
 
 @test "auto: successful restore triggers cleanup" {
-    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
-    export MOCK_BLKID_OUTPUT="ext4"
-    mkdir -p "$TEST_MOUNT_DIR/./data"
-    touch "$TEST_MOUNT_DIR/./data/file.txt"
+    setup_device_mock "ext4"
+    create_test_source_file "/data/file.txt"
     run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path /data/file.txt
     assert_success
     grep -q "^sync" "$MOCK_CALL_LOG"
     grep -q "^umount" "$MOCK_CALL_LOG"
+}
+
+# =============================================================================
+# LVM detection and handling
+# =============================================================================
+
+@test "lvm: LVM2_member detected triggers vgimportclone flow" {
+    setup_lvm_single_lv_mock
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    assert_output --partial "LVM detected on /dev/sdb"
+    grep -q "vgimportclone.*-n filerestore_ABC123 /dev/sdb" "$MOCK_CALL_LOG"
+}
+
+@test "lvm: missing lvm2 tools exits 1" {
+    setup_device_mock "LVM2_member"
+    # Hide vgimportclone: create a mocks copy without it and replace PATH entry
+    local safe_mocks="$BATS_TEST_TMPDIR/mocks_no_lvm"
+    mkdir -p "$safe_mocks"
+    for f in "$BATS_TEST_DIRNAME"/mocks/*; do
+        [ "$(basename "$f")" = "vgimportclone" ] && continue
+        ln -s "$f" "$safe_mocks/"
+    done
+    export PATH="${PATH/$BATS_TEST_DIRNAME\/mocks/$safe_mocks}"
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_failure
+    assert_output --partial "lvm2 tools not installed"
+}
+
+@test "lvm: vgimportclone failure exits 1" {
+    setup_device_mock "LVM2_member"
+    export MOCK_VGIMPORTCLONE_EXIT=1
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_failure
+    assert_output --partial "vgimportclone failed"
+}
+
+@test "lvm: vgchange activation failure cleans up and exits 1" {
+    setup_device_mock "LVM2_member"
+    export MOCK_VGCHANGE_AY_EXIT=1
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_failure
+    assert_output --partial "Failed to activate cloned VG"
+    # State file must exist before vgchange so cleanup can deactivate the VG
+    grep -q "vgremove.*filerestore_ABC123" "$MOCK_CALL_LOG"
+}
+
+@test "lvm: vgchange -ay called with correct VG name" {
+    setup_lvm_single_lv_mock
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    grep -q "vgchange.*-ay filerestore_ABC123" "$MOCK_CALL_LOG"
+}
+
+@test "lvm: single LV mounted at MOUNT_PATH" {
+    setup_lvm_single_lv_mock
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    grep -q "mount -o ro,noload /dev/filerestore_ABC123/datalv $TEST_MOUNT_DIR" "$MOCK_CALL_LOG"
+}
+
+@test "lvm: multiple LVs mounted as subdirectories" {
+    setup_device_mock "LVM2_member"
+    export MOCK_LVS_OUTPUT="  rootlv
+  homelv"
+    export MOCK_BLKID_DEVICES="/dev/sdb=LVM2_member;/dev/filerestore_ABC123/rootlv=ext4;/dev/filerestore_ABC123/homelv=xfs"
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    grep -q "mount -o ro,noload /dev/filerestore_ABC123/rootlv $TEST_MOUNT_DIR/rootlv" "$MOCK_CALL_LOG"
+    grep -q "mount -o ro,norecovery,nouuid /dev/filerestore_ABC123/homelv $TEST_MOUNT_DIR/homelv" "$MOCK_CALL_LOG"
+}
+
+@test "lvm: LV without filesystem is skipped" {
+    setup_device_mock "LVM2_member"
+    export MOCK_LVS_OUTPUT="  swaplv
+  datalv"
+    # swaplv has no filesystem, datalv has ext4
+    export MOCK_BLKID_DEVICES="/dev/sdb=LVM2_member;/dev/filerestore_ABC123/swaplv=;/dev/filerestore_ABC123/datalv=ext4"
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    assert_output --partial "Skipping LV swaplv"
+    # mount should not be called with swaplv; datalv should be mounted (as the only mountable LV)
+    ! grep -q "^mount.*filerestore_ABC123/swaplv" "$MOCK_CALL_LOG"
+}
+
+@test "lvm: xfs on LVM gets nouuid option" {
+    setup_device_mock "LVM2_member"
+    export MOCK_LVS_OUTPUT="  datalv"
+    export MOCK_BLKID_DEVICES="/dev/sdb=LVM2_member;/dev/filerestore_ABC123/datalv=xfs"
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    assert_output --partial "with options: ro,norecovery,nouuid"
+}
+
+@test "lvm: state file written with VG name" {
+    setup_lvm_single_lv_mock
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    [ -f "${TEST_MOUNT_DIR}.lvm_vg" ]
+    [ "$(cat "${TEST_MOUNT_DIR}.lvm_vg")" = "filerestore_ABC123" ]
+}
+
+@test "lvm: all LVM commands use --devicesfile flag" {
+    setup_lvm_single_lv_mock
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    grep -q "vgimportclone --devicesfile" "$MOCK_CALL_LOG"
+    grep -q "vgscan --devicesfile" "$MOCK_CALL_LOG"
+    grep -q "vgchange --devicesfile" "$MOCK_CALL_LOG"
+    grep -q "lvs --devicesfile" "$MOCK_CALL_LOG"
+}
+
+@test "lvm: lvs failure cleans up and exits 1" {
+    setup_device_mock "LVM2_member"
+    export MOCK_LVS_EXIT=1
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_failure
+    assert_output --partial "Failed to list LVs"
+    grep -q "vgremove.*filerestore_ABC123" "$MOCK_CALL_LOG"
+}
+
+@test "lvm: state file written before vgchange enables cleanup on failure" {
+    setup_device_mock "LVM2_member"
+    export MOCK_VGCHANGE_AY_EXIT=1
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_failure
+    # Cleanup ran vgremove — proving the state file was written before vgchange
+    grep -q "vgremove.*filerestore_ABC123" "$MOCK_CALL_LOG"
+    # State file removed by cleanup
+    [ ! -f "${TEST_MOUNT_DIR}.lvm_vg" ]
+}
+
+@test "lvm: vgscan failure logs warning but continues" {
+    setup_lvm_single_lv_mock
+    export MOCK_VGSCAN_EXIT=1
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    assert_output --partial "WARNING: vgscan --cache failed"
+}
+
+@test "lvm: no mountable LVs exits 1" {
+    setup_device_mock "LVM2_member"
+    export MOCK_LVS_OUTPUT="  swaplv"
+    export MOCK_BLKID_DEVICES="/dev/sdb=LVM2_member;/dev/filerestore_ABC123/swaplv="
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_failure
+    assert_output --partial "No LVs could be mounted"
+}
+
+@test "lvm: stale VG from previous run is cleaned up before vgimportclone" {
+    setup_lvm_single_lv_mock
+    export MOCK_VGS_EXIT=0  # VG exists (stale)
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    assert_output --partial "Stale VG filerestore_ABC123 found"
+    # Stale cleanup runs before vgimportclone
+    local vgs_line vgimport_line
+    vgs_line=$(grep -n "^vgs" "$MOCK_CALL_LOG" | head -1 | cut -d: -f1)
+    vgimport_line=$(grep -n "^vgimportclone" "$MOCK_CALL_LOG" | head -1 | cut -d: -f1)
+    [ "$vgs_line" -lt "$vgimport_line" ]
+}
+
+@test "lvm: swap+data LV mounts data directly at MOUNT_PATH" {
+    setup_device_mock "LVM2_member"
+    export MOCK_LVS_OUTPUT="  swaplv
+  datalv"
+    export MOCK_BLKID_DEVICES="/dev/sdb=LVM2_member;/dev/filerestore_ABC123/swaplv=;/dev/filerestore_ABC123/datalv=ext4"
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    # Only 1 mountable LV, so it goes directly at MOUNT_PATH (not MOUNT_PATH/datalv)
+    grep -q "mount -o ro,noload /dev/filerestore_ABC123/datalv $TEST_MOUNT_DIR$" "$MOCK_CALL_LOG"
+}
+
+# =============================================================================
+# LVM cleanup
+# =============================================================================
+
+@test "lvm-cleanup: reads state file and deactivates VG" {
+    echo "filerestore_ABC123" > "${TEST_MOUNT_DIR}.lvm_vg"
+    export MOCK_FINDMNT_OUTPUT="$TEST_MOUNT_DIR"
+    run "$SCRIPT" cleanup --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    grep -q "vgchange.*--devicesfile.*-an filerestore_ABC123" "$MOCK_CALL_LOG"
+    grep -q "vgremove.*--devicesfile.*-f filerestore_ABC123" "$MOCK_CALL_LOG"
+}
+
+@test "lvm-cleanup: state file removed after cleanup" {
+    echo "filerestore_ABC123" > "${TEST_MOUNT_DIR}.lvm_vg"
+    export MOCK_FINDMNT_OUTPUT="$TEST_MOUNT_DIR"
+    run "$SCRIPT" cleanup --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    [ ! -f "${TEST_MOUNT_DIR}.lvm_vg" ]
+}
+
+@test "lvm-cleanup: vgchange -an failure skips vgremove" {
+    echo "filerestore_ABC123" > "${TEST_MOUNT_DIR}.lvm_vg"
+    export MOCK_FINDMNT_OUTPUT="$TEST_MOUNT_DIR"
+    export MOCK_VGCHANGE_EXIT=1
+    run "$SCRIPT" cleanup --mount-path "$TEST_MOUNT_DIR"
+    assert_failure
+    grep -q "vgchange.*-an filerestore_ABC123" "$MOCK_CALL_LOG"
+    ! grep -q "vgremove" "$MOCK_CALL_LOG"
+    assert_output --partial "Failed to deactivate VG filerestore_ABC123"
+    assert_output --partial "skipping removal to avoid corruption"
+    assert_output --partial "completed with errors"
+}
+
+@test "lvm-cleanup: without state file uses standard unmount" {
+    run "$SCRIPT" cleanup --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    grep -q "^umount $TEST_MOUNT_DIR" "$MOCK_CALL_LOG"
+    ! grep -q "vgchange" "$MOCK_CALL_LOG"
+    ! grep -q "vgremove" "$MOCK_CALL_LOG"
+}
+
+# =============================================================================
+# LVM automatic mode
+# =============================================================================
+
+@test "lvm-auto: single LV rsync from MOUNT_PATH" {
+    setup_lvm_single_lv_mock
+    create_test_source_file "/data/file.txt"
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path /data/file.txt
+    assert_success
+    grep -q "rsync -avR $TEST_MOUNT_DIR/./data/file.txt /" "$MOCK_CALL_LOG"
+}
+
+@test "lvm-auto: multi-LV finds source in correct sub-mount" {
+    setup_device_mock "LVM2_member"
+    export MOCK_LVS_OUTPUT="  rootlv
+  homelv"
+    export MOCK_BLKID_DEVICES="/dev/sdb=LVM2_member;/dev/filerestore_ABC123/rootlv=ext4;/dev/filerestore_ABC123/homelv=ext4"
+    # Source path is in homelv
+    create_test_source_file "/home/user/file.txt" "$TEST_MOUNT_DIR/homelv"
+    mkdir -p "$TEST_MOUNT_DIR/rootlv"
+    export MOCK_FINDMNT_OUTPUT="$TEST_MOUNT_DIR/rootlv
+$TEST_MOUNT_DIR/homelv"
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path /home/user/file.txt
+    assert_success
+    grep -q "rsync -avR $TEST_MOUNT_DIR/homelv/./home/user/file.txt /" "$MOCK_CALL_LOG"
+}
+
+@test "lvm-auto: rsync failure triggers full LVM cleanup" {
+    setup_lvm_single_lv_mock
+    export MOCK_RSYNC_EXIT=1
+    export MOCK_FINDMNT_OUTPUT="$TEST_MOUNT_DIR"
+    create_test_source_file "/data/file.txt"
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path /data/file.txt
+    assert_failure
+    grep -q "vgchange.*-an filerestore_ABC123" "$MOCK_CALL_LOG"
+    grep -q "vgremove.*filerestore_ABC123" "$MOCK_CALL_LOG"
+}
+
+@test "lvm-auto: successful restore triggers full LVM cleanup" {
+    setup_lvm_single_lv_mock
+    export MOCK_FINDMNT_OUTPUT="$TEST_MOUNT_DIR"
+    create_test_source_file "/data/file.txt"
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path /data/file.txt
+    assert_success
+    grep -q "vgchange.*-an filerestore_ABC123" "$MOCK_CALL_LOG"
+    grep -q "vgremove.*filerestore_ABC123" "$MOCK_CALL_LOG"
+}
+
+@test "lvm-cleanup: vgremove failure warns but exits non-zero" {
+    echo "filerestore_ABC123" > "${TEST_MOUNT_DIR}.lvm_vg"
+    export MOCK_FINDMNT_OUTPUT="$TEST_MOUNT_DIR"
+    export MOCK_VGREMOVE_EXIT=1
+    run "$SCRIPT" cleanup --mount-path "$TEST_MOUNT_DIR"
+    assert_failure
+    assert_output --partial "Failed to remove VG filerestore_ABC123"
+    assert_output --partial "completed with errors"
+    [ ! -f "${TEST_MOUNT_DIR}.lvm_vg" ]
+}
+
+@test "lvm-cleanup: submounts unmounted in reverse order" {
+    echo "filerestore_ABC123" > "${TEST_MOUNT_DIR}.lvm_vg"
+    export MOCK_FINDMNT_OUTPUT="$TEST_MOUNT_DIR/homelv
+$TEST_MOUNT_DIR/rootlv"
+    run "$SCRIPT" cleanup --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    # Verify reverse sort: rootlv should be unmounted before homelv
+    local rootlv_line homelv_line
+    rootlv_line=$(grep -n "^umount $TEST_MOUNT_DIR/rootlv" "$MOCK_CALL_LOG" | head -1 | cut -d: -f1)
+    homelv_line=$(grep -n "^umount $TEST_MOUNT_DIR/homelv" "$MOCK_CALL_LOG" | head -1 | cut -d: -f1)
+    [ "$rootlv_line" -lt "$homelv_line" ]
+}
+
+@test "lvm-cleanup: empty state file skips LVM cleanup" {
+    > "${TEST_MOUNT_DIR}.lvm_vg"
+    run "$SCRIPT" cleanup --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    assert_output --partial "exists but is empty"
+    ! grep -q "vgchange" "$MOCK_CALL_LOG"
+    grep -q "^umount $TEST_MOUNT_DIR" "$MOCK_CALL_LOG"
+}
+
+@test "lvm: stale VG deactivation failure aborts" {
+    setup_device_mock "LVM2_member"
+    export MOCK_VGS_EXIT=0
+    export MOCK_VGCHANGE_EXIT=1
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_failure
+    assert_output --partial "Failed to deactivate stale VG"
+}
+
+@test "lvm: stale VG removal failure aborts" {
+    setup_device_mock "LVM2_member"
+    export MOCK_VGS_EXIT=0
+    export MOCK_VGREMOVE_EXIT=1
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR"
+    assert_failure
+    assert_output --partial "Failed to remove stale VG"
+}
+
+@test "cleanup: sync failure (non-timeout) logs correct message" {
+    export MOCK_TIMEOUT_EXIT=1
+    run "$SCRIPT" cleanup --mount-path "$TEST_MOUNT_DIR"
+    assert_success
+    assert_output --partial "sync failed (exit 1), proceeding with unmount"
+}
+
+@test "lvm-auto: multi-LV source not found in any LV exits 1" {
+    setup_device_mock "LVM2_member"
+    export MOCK_LVS_OUTPUT="  rootlv
+  homelv"
+    export MOCK_BLKID_DEVICES="/dev/sdb=LVM2_member;/dev/filerestore_ABC123/rootlv=ext4;/dev/filerestore_ABC123/homelv=ext4"
+    mkdir -p "$TEST_MOUNT_DIR/rootlv"
+    mkdir -p "$TEST_MOUNT_DIR/homelv"
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path /nonexistent
+    assert_failure
+    assert_output --partial "Source path /nonexistent not found in any LV"
 }
