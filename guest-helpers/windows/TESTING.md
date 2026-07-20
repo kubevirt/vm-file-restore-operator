@@ -4,7 +4,7 @@ Unit tests for the Windows guest helper script (`filerestore.bat`).
 
 ## Quick Start
 
-Run script tests (requires Docker or Podman):
+Run script tests (requires `make` and Docker or Podman):
 
 ```bash
 make test-scripts-windows
@@ -18,7 +18,7 @@ CONTAINER_ENGINE=docker make test-scripts-windows
 
 ## Prerequisites
 
-Only a container runtime (Docker or Podman) is needed:
+GNU Make and a container runtime (Docker or Podman) are needed:
 
 - [`mcr.microsoft.com/dotnet/sdk`](https://learn.microsoft.com/en-us/powershell/scripting/install/powershell-in-docker) with [Pester v5](https://pester.dev/) installed at runtime (pinned version; requires network access to the PowerShell Gallery)
 
@@ -26,7 +26,7 @@ No local installation of PowerShell or Pester is required (the container downloa
 
 ## Test Structure
 
-```
+```text
 guest-helpers/windows/
   filerestore.bat
   test/
