@@ -430,9 +430,9 @@ Describe 'Drive letter stripping logic' {
         $result | Should -Be 'folder\file.txt'
     }
 
-    It 'preserves path without drive letter' {
-        $result = '\test\data' -replace '^[A-Za-z]:\\', ''
-        $result | Should -Be '\test\data'
+    It 'normalizes leading backslash when no drive letter is present' {
+        $result = ('\test\data' -replace '^[A-Za-z]:\\', '').TrimStart('\\')
+        $result | Should -Be 'test\data'
     }
 
     It 'preserves UNC path' {
