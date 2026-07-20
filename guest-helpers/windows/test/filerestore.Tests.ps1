@@ -39,8 +39,10 @@ BeforeAll {
             [string[]]$Arguments = @(),
             [hashtable]$Env = @{}
         )
+        $savedEnv = @{}
         try {
             foreach ($key in $Env.Keys) {
+                if (Test-Path "env:$key") { $savedEnv[$key] = (Get-Item "env:$key").Value }
                 Set-Item "env:$key" $Env[$key]
             }
             return @{ ExitCode = (Invoke-FileRestore $Arguments) }
@@ -48,7 +50,8 @@ BeforeAll {
             throw "Invoke-FileRestore threw unexpectedly: $_"
         } finally {
             foreach ($key in $Env.Keys) {
-                Remove-Item "env:$key" -ErrorAction SilentlyContinue
+                if ($savedEnv.ContainsKey($key)) { Set-Item "env:$key" $savedEnv[$key] }
+                else { Remove-Item "env:$key" -ErrorAction SilentlyContinue }
             }
         }
     }
