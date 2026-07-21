@@ -7,13 +7,13 @@ Unit tests for the Linux guest helper script (`filerestore.sh`).
 Run script tests (requires Docker or Podman):
 
 ```bash
-make test-scripts
+make test-scripts-linux
 ```
 
 By default, `CONTAINER_ENGINE` inherits from `CONTAINER_TOOL`, which defaults to `docker`. To override:
 
 ```bash
-CONTAINER_ENGINE=docker make test-scripts
+CONTAINER_ENGINE=docker make test-scripts-linux
 ```
 
 ## Prerequisites

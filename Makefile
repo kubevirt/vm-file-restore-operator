@@ -168,12 +168,27 @@ test-e2e: manifests generate fmt vet ## Run e2e tests (requires kubevirtci clust
 ##@ Script Tests
 
 CONTAINER_ENGINE ?= $(CONTAINER_TOOL)
+# mcr.microsoft.com/powershell is deprecated; the .NET SDK image is the
+# recommended replacement and includes pwsh.
+# https://learn.microsoft.com/en-us/powershell/scripting/install/powershell-in-docker
+PWSH_IMAGE ?= mcr.microsoft.com/dotnet/sdk:9.0
+PESTER_VERSION ?= 5.7.1
 BATS_IMAGE ?= bats/bats:1.13.0
 # :Z relabels for SELinux; use empty value on Docker Desktop (macOS/Windows)
 VOLUME_OPTS ?= :Z
 
 .PHONY: test-scripts
-test-scripts: test-scripts-linux ## Run guest-helper script tests
+test-scripts: test-scripts-windows test-scripts-linux ## Run guest-helper script tests
+
+.PHONY: test-scripts-windows
+test-scripts-windows: ## Run Pester tests for Windows guest helper (containerized)
+	$(CONTAINER_ENGINE) run --rm \
+		-v $(shell pwd):/workspace$(VOLUME_OPTS) \
+		-w /workspace \
+		$(PWSH_IMAGE) \
+		pwsh -NoProfile -Command " \
+			Install-Module Pester -RequiredVersion $(PESTER_VERSION) -Force -SkipPublisherCheck -Scope CurrentUser; \
+			Invoke-Pester -Path 'guest-helpers/windows/test/' -Output Detailed -CI"
 
 .PHONY: test-scripts-linux
 test-scripts-linux: ## Run BATS tests for Linux guest helper (containerized)
