@@ -602,24 +602,9 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 
 	logger.Info("Restore command completed", "stdout", stdout, "stderr", stderr)
 
-	// Parse output for file count (issue #8: fix parsing, issue #20: parse multiple patterns)
-	// Expected output formats: "42 files restored", "Restored 42 files", "42 files"
-	fileCount := int32(0)
-	for _, line := range strings.Split(stdout, "\n") {
-		var count int32
-		// Try common patterns
-		if n, _ := fmt.Sscanf(line, "%d files restored", &count); n == 1 {
-			fileCount = count
-			break
-		}
-		if n, _ := fmt.Sscanf(line, "Restored %d files", &count); n == 1 {
-			fileCount = count
-			break
-		}
-		if n, _ := fmt.Sscanf(line, "%d files", &count); n == 1 {
-			fileCount = count
-			break
-		}
+	fileCount := ParseRestoredFileCount(stdout)
+	if fileCount == 0 && strings.TrimSpace(stdout) != "" {
+		logger.Info("WARNING: parsed 0 files but stdout was non-empty, the guest helper may not have emitted a count line")
 	}
 
 	logger.Info("File restore completed", "filesRestored", fileCount)
@@ -642,7 +627,7 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 
 	// Update file count and transition phase atomically (issue #9)
 	patch := client.MergeFrom(vmfr.DeepCopy())
-	vmfr.Status.RestoredFilesCount = fileCount
+	vmfr.Status.RestoredFilesCount = &fileCount
 	vmfr.Status.Phase = nextPhase
 
 	if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
@@ -683,10 +668,10 @@ func handleCleanupPhase(ctx context.Context, r *VirtualMachineFileRestoreReconci
 		if errors.IsNotFound(err) {
 			// VM deleted during restore (issue #10)
 			// Check if we successfully restored files before VM was deleted
-			if vmfr.Status.RestoredFilesCount > 0 {
-				logger.Info("Target VM was deleted after restore completed", "filesRestored", vmfr.Status.RestoredFilesCount)
+			if vmfr.Status.RestoredFilesCount != nil && *vmfr.Status.RestoredFilesCount > 0 {
+				logger.Info("Target VM was deleted after restore completed", "filesRestored", *vmfr.Status.RestoredFilesCount)
 				return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseSucceeded,
-					fmt.Sprintf("Restored %d files (VM was deleted during cleanup)", vmfr.Status.RestoredFilesCount))
+					fmt.Sprintf("Restored %d files (VM was deleted during cleanup)", *vmfr.Status.RestoredFilesCount))
 			}
 			// VM deleted before restore completed
 			return failRestore(ctx, r, vmfr, err, "target VM was deleted before restore could complete")
@@ -729,6 +714,35 @@ func handleCleanupPhase(ctx context.Context, r *VirtualMachineFileRestoreReconci
 	r.Recorder.Event(vmfr, corev1.EventTypeNormal, "VolumeUnplugged", "Volume unplugged from VM")
 
 	// Transition to Succeeded
-	filesRestored := vmfr.Status.RestoredFilesCount
+	var filesRestored int32
+	if vmfr.Status.RestoredFilesCount != nil {
+		filesRestored = *vmfr.Status.RestoredFilesCount
+	}
 	return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseSucceeded, fmt.Sprintf("Restore completed successfully (%d files)", filesRestored))
+}
+
+// ParseRestoredFileCount extracts a file count from guest helper stdout.
+// Only lines carrying the "[filerestore] " prefix are considered, avoiding
+// false positives from rsync verbose output (e.g. filenames starting with digits).
+func ParseRestoredFileCount(stdout string) int32 {
+	const prefix = "[filerestore] "
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		line = strings.TrimPrefix(line, prefix)
+
+		var count int32
+		if n, _ := fmt.Sscanf(line, "%d files restored", &count); n == 1 {
+			return count
+		}
+		if n, _ := fmt.Sscanf(line, "Restored %d files", &count); n == 1 {
+			return count
+		}
+		if n, _ := fmt.Sscanf(line, "%d files", &count); n == 1 {
+			return count
+		}
+	}
+	return 0
 }

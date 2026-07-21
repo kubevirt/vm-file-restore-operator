@@ -1,8 +1,6 @@
 package controller
 
 import (
-	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,7 +10,7 @@ import (
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 )
 
-// Test file count parsing from stdout - covers the parsing logic in handleRestoringPhase:606-619
+// Test file count parsing from stdout via the extracted ParseRestoredFileCount function
 func TestParseRestoredFileCount(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -21,22 +19,22 @@ func TestParseRestoredFileCount(t *testing.T) {
 	}{
 		{
 			name:     "pattern 1: N files restored",
-			stdout:   "42 files restored\n",
+			stdout:   "[filerestore] 42 files restored\n",
 			expected: 42,
 		},
 		{
 			name:     "pattern 2: Restored N files",
-			stdout:   "Restored 42 files\n",
+			stdout:   "[filerestore] Restored 42 files\n",
 			expected: 42,
 		},
 		{
 			name:     "pattern 3: N files",
-			stdout:   "42 files\n",
+			stdout:   "[filerestore] 42 files\n",
 			expected: 42,
 		},
 		{
 			name:     "multiple lines, first match wins",
-			stdout:   "Processing...\n42 files restored\n100 files restored\n",
+			stdout:   "[filerestore] Processing...\n[filerestore] 42 files restored\n[filerestore] 100 files restored\n",
 			expected: 42,
 		},
 		{
@@ -46,37 +44,39 @@ func TestParseRestoredFileCount(t *testing.T) {
 		},
 		{
 			name:     "zero files",
-			stdout:   "0 files restored\n",
+			stdout:   "[filerestore] 0 files restored\n",
 			expected: 0,
 		},
 		{
 			name:     "large count",
-			stdout:   "Restored 99999 files\n",
+			stdout:   "[filerestore] Restored 99999 files\n",
 			expected: 99999,
+		},
+		{
+			name:     "empty stdout",
+			stdout:   "",
+			expected: 0,
+		},
+		{
+			name:     "unprefixed lines are ignored",
+			stdout:   "42 files restored\n",
+			expected: 0,
+		},
+		{
+			name:     "realistic combined rsync and helper output",
+			stdout:   "sending incremental file list\ndata/\ndata/file.txt\n\nsent 100 bytes  received 35 bytes  270.00 bytes/sec\ntotal size is 14  speedup is 0.10\n[filerestore] 1 files restored\n[filerestore] Automatic restore of /data/file.txt completed successfully\n",
+			expected: 1,
+		},
+		{
+			name:     "numeric filename in rsync output does not false-positive",
+			stdout:   "sending incremental file list\n2023-report.pdf\n3backup.txt\n\nsent 200 bytes  received 50 bytes  500.00 bytes/sec\ntotal size is 1024  speedup is 4.10\n[filerestore] 2 files restored\n",
+			expected: 2,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Simulate the parsing logic from handleRestoringPhase (phases.go:606-619)
-			fileCount := int32(0)
-			for _, line := range strings.Split(tt.stdout, "\n") {
-				var count int32
-				// Try common patterns
-				if n, _ := fmt.Sscanf(line, "%d files restored", &count); n == 1 {
-					fileCount = count
-					break
-				}
-				if n, _ := fmt.Sscanf(line, "Restored %d files", &count); n == 1 {
-					fileCount = count
-					break
-				}
-				if n, _ := fmt.Sscanf(line, "%d files", &count); n == 1 {
-					fileCount = count
-					break
-				}
-			}
-			assert.Equal(t, tt.expected, fileCount)
+			assert.Equal(t, tt.expected, ParseRestoredFileCount(tt.stdout))
 		})
 	}
 }

@@ -397,6 +397,11 @@ func (in *VirtualMachineFileRestoreStatus) DeepCopyInto(out *VirtualMachineFileR
 		in, out := &in.CompletionTime, &out.CompletionTime
 		*out = (*in).DeepCopy()
 	}
+	if in.RestoredFilesCount != nil {
+		in, out := &in.RestoredFilesCount, &out.RestoredFilesCount
+		*out = new(int32)
+		**out = **in
+	}
 	if in.LastAttachmentCheckTime != nil {
 		in, out := &in.LastAttachmentCheckTime, &out.LastAttachmentCheckTime
 		*out = (*in).DeepCopy()

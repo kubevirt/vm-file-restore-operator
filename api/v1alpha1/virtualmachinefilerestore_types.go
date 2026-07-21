@@ -117,8 +117,10 @@ type VirtualMachineFileRestoreStatus struct {
 	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
 
 	// RestoredFilesCount is the number of files successfully restored.
+	// nil when no automatic file transfer was performed (manual mode or not yet started);
+	// 0 means the transfer ran but no files were copied (e.g. files already up-to-date).
 	// +optional
-	RestoredFilesCount int32 `json:"restoredFilesCount,omitempty"`
+	RestoredFilesCount *int32 `json:"restoredFilesCount,omitempty"`
 
 	// ErrorMessage provides details about any error that occurred during restoration.
 	// +optional

@@ -189,11 +189,17 @@ if [ ! -e "$MOUNT_PATH/.$SOURCE_PATH" ]; then
 fi
 
 # --- Automatic mode: copy files FROM the source volume back to the guest root ---
-if ! rsync -avR "$MOUNT_PATH/.$SOURCE_PATH" /; then
+rsync_output=$(rsync -avR "$MOUNT_PATH/.$SOURCE_PATH" /) || {
+    echo "$rsync_output"
     log_err "Failed to restore $SOURCE_PATH from source volume"
     unmount_and_cleanup "$MOUNT_PATH"
     exit 1
-fi
+}
+echo "$rsync_output"
+
+# Count transferred files from rsync verbose output (exclude directories, header, summary, blanks)
+file_count=$(echo "$rsync_output" | sed '/^sending incremental file list$/d; /^$/d; /\/$/d; /^sent [0-9]/d; /^total size is /d' | wc -l)
+log "$file_count files restored"
 
 unmount_and_cleanup "$MOUNT_PATH"
 log "Automatic restore of $SOURCE_PATH completed successfully"
