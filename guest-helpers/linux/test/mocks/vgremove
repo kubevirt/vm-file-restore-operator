@@ -1,0 +1,3 @@
+#!/bin/bash
+echo "vgremove $*" >> "$MOCK_CALL_LOG"
+exit "${MOCK_VGREMOVE_EXIT:-0}"

@@ -1,0 +1,6 @@
+#!/bin/bash
+echo "vgchange $*" >> "$MOCK_CALL_LOG"
+if [[ "$*" == *"-ay"* ]]; then
+    exit "${MOCK_VGCHANGE_AY_EXIT:-0}"
+fi
+exit "${MOCK_VGCHANGE_EXIT:-0}"

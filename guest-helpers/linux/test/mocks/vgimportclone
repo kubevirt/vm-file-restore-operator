@@ -1,0 +1,3 @@
+#!/bin/bash
+echo "vgimportclone $*" >> "$MOCK_CALL_LOG"
+exit "${MOCK_VGIMPORTCLONE_EXIT:-0}"

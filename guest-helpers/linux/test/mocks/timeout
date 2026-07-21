@@ -1,0 +1,8 @@
+#!/bin/bash
+echo "timeout $*" >> "$MOCK_CALL_LOG"
+if [ "${MOCK_TIMEOUT_EXIT:-}" != "" ]; then
+    exit "$MOCK_TIMEOUT_EXIT"
+fi
+# Skip the timeout value and run the actual command
+shift
+exec "$@"

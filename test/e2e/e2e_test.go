@@ -19,52 +19,32 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"time"
 
-	snapshotclientset "github.com/kubernetes-csi/external-snapshotter/client/v6/clientset/versioned"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	kubevirtv1 "kubevirt.io/api/core/v1"
-	"kubevirt.io/client-go/kubecli"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	filerestorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 	"kubevirt.io/vm-file-restore-operator/test/utils"
 )
 
-// namespace where the project is deployed in
-const namespace = "file-restore"
-
-// serviceAccountName created for the project
-const serviceAccountName = "vm-file-restore-controller-manager"
-
-// metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "vm-file-restore-controller-manager-metrics-service"
-
-// metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
-const metricsRoleBindingName = "vm-file-restore-metrics-binding"
-
 const (
-	vmName        = "fedora-file-restore-test"
+	serviceAccountName     = "vm-file-restore-controller-manager"
+	metricsServiceName     = "vm-file-restore-controller-manager-metrics-service"
+	metricsRoleBindingName = "vm-file-restore-metrics-binding"
+
 	snapshotName  = "fedora-file-restore-test-snap"
 	restoreCRName = "restore-test-donald-home"
 	testUser      = "donald"
 	testFilePath  = "/home/donald/testfile.dat"
-	bootDiskName  = "fedora-boot-dv"
-	bootDiskSize  = "10Gi"
 )
 
 var _ = Describe("Manager", Ordered, func() {
-	var testNamespace string
-
 	// Operator and namespace are already deployed via 'make cluster-sync'
 	// Just verify they are present
 	BeforeAll(func() {
@@ -232,367 +212,127 @@ var _ = Describe("Manager", Ordered, func() {
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
 		// Test file restore workflow end-to-end:
-		// 1. Create a Fedora VM with a boot disk (DataVolume)
-		// 2. Install guest helper with operator's SSH key
-		// 3. Create test user and generate test file
-		// 4. Snapshot the boot disk
-		// 5. Create VirtualMachineFileRestore CR
-		// 6. Verify file is restored with correct size and ownership
+		// 1. Create a Fedora VM with a boot disk (setupTestVM)
+		// 2. Create test user and generate test file
+		// 3. Snapshot the boot disk
+		// 4. Delete the test file, create VirtualMachineFileRestore CR
+		// 5. Verify file is restored with correct size and ownership
 		It("should restore files from VolumeSnapshot to VM", func() {
-			var (
-				k8sClient      *kubernetes.Clientset
-				virtClient     kubecli.KubevirtClient
-				snapshotClient snapshotclientset.Interface
-				crClient       client.Client
-				pubKey         string
-				privateKeyPath string
-				originalSize   int64
-			)
+			env := setupTestVM("e2e-filerestore")
 
-			// Initialize clients
-			By("initializing Kubernetes clients")
-			var err error
-			k8sClient, virtClient, snapshotClient, crClient, err = initClients()
-			Expect(err).NotTo(HaveOccurred(), "Failed to initialize clients")
-
-			// Create unique test namespace
-			By("creating unique test namespace")
-			testNamespace = fmt.Sprintf("e2e-filerestore-%d", GinkgoRandomSeed())
-			ns := &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: testNamespace,
-				},
-			}
-			_, err = k8sClient.CoreV1().Namespaces().Create(context.Background(), ns, metav1.CreateOptions{})
-			Expect(err).NotTo(HaveOccurred(), "Failed to create test namespace")
-			_, _ = fmt.Fprintf(GinkgoWriter, "Created test namespace: %s\n", testNamespace)
-
-			// Register cleanup that always runs, even if test fails
-			DeferCleanup(func() {
-				By("cleaning up test resources")
-
-				// Clean up temporary SSH key directory
-				if privateKeyPath != "" {
-					tmpDir := filepath.Dir(privateKeyPath)
-					_ = os.RemoveAll(tmpDir)
-				}
-
-				// Delete test namespace (cascades to all resources including VM, snapshot, restore CR)
-				_ = k8sClient.CoreV1().Namespaces().Delete(
-					context.Background(),
-					testNamespace,
-					metav1.DeleteOptions{},
-				)
-
-				_, _ = fmt.Fprintf(GinkgoWriter, "Cleanup completed\n")
-			})
-
-			// Phase 1: Generate temporary SSH keypair for test root access
-			By("generating temporary SSH keypair for test")
-			tmpDir, err := os.MkdirTemp("", "e2e-ssh-")
-			Expect(err).NotTo(HaveOccurred(), "Failed to create temp directory")
-			privateKeyPath = tmpDir + "/id_ed25519"
-
-			// Generate ED25519 keypair for root access during test
-			cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-f", privateKeyPath, "-N", "", "-C", "e2e-test")
-			keygenOutput, err := cmd.CombinedOutput()
-			Expect(err).NotTo(HaveOccurred(), "Failed to generate SSH keypair: %s", string(keygenOutput))
-
-			// Read test public key
-			pubKeyBytes, err := os.ReadFile(privateKeyPath + ".pub")
-			Expect(err).NotTo(HaveOccurred(), "Failed to read public key")
-			pubKey = strings.TrimSpace(string(pubKeyBytes))
-			_, _ = fmt.Fprintf(GinkgoWriter, "Generated test SSH key: %s\n", privateKeyPath)
-
-			// Get operator's SSH public key for guest helper installation
-			By("fetching operator's SSH public key from ConfigMap")
-			cm, err := k8sClient.CoreV1().ConfigMaps(namespace).Get(
-				context.Background(),
-				"vm-file-restore-operator-ssh",
-				metav1.GetOptions{},
-			)
-			Expect(err).NotTo(HaveOccurred(), "Failed to get operator SSH ConfigMap")
-			operatorPubKey := cm.Data["ssh-publickey"]
-			Expect(operatorPubKey).NotTo(BeEmpty(), "Operator SSH public key is empty in ConfigMap")
-			Expect(operatorPubKey).To(HavePrefix("ssh-"), "Invalid operator SSH public key format")
-			_, _ = fmt.Fprintf(GinkgoWriter, "Operator SSH key: %s...\n", operatorPubKey[:20])
-
-			// Phase 2: Create VM and wait for it to reach Running state
-			By("creating test VirtualMachine")
-			err = createTestVM(virtClient, testNamespace, vmName, pubKey, bootDiskName, bootDiskSize)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create VM")
-
-			By("waiting for VM to reach Running state")
-			Eventually(func(g Gomega) {
-				vmi, err := virtClient.VirtualMachineInstance(testNamespace).Get(context.Background(), vmName, metav1.GetOptions{})
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to get VMI")
-				g.Expect(vmi.Status.Phase).To(Equal(kubevirtv1.Running), "VMI not running")
-				g.Expect(vmi.Status.Interfaces).NotTo(BeEmpty(), "VMI has no network interfaces")
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
-			_, _ = fmt.Fprintf(GinkgoWriter, "VM %s is running\n", vmName)
-
-			// Phase 3: Wait for SSH connectivity, then install guest helper
-			By("waiting for SSH connectivity")
-			Eventually(func(g Gomega) {
-				_, err := runSSHCommand(vmName, testNamespace, "echo ready", privateKeyPath)
-				g.Expect(err).NotTo(HaveOccurred(), "SSH not ready")
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
-			_, _ = fmt.Fprintf(GinkgoWriter, "SSH is ready\n")
-
-			By("installing guest helper with operator's SSH key")
-			// Determine repo root from test file location
-			_, testFile, _, _ := goruntime.Caller(0)
-			repoRoot := filepath.Join(filepath.Dir(testFile), "../..")
-			setupScriptPath := filepath.Join(repoRoot, "guest-helpers/linux/setup.sh")
-			setupScript, err := os.ReadFile(setupScriptPath)
-			Expect(err).NotTo(HaveOccurred(), "Failed to read setup script")
-			setupCmd := fmt.Sprintf("cat <<'SETUP_EOF' | bash -s -- '%s'\n%s\nSETUP_EOF", operatorPubKey, string(setupScript))
-			Eventually(func(g Gomega) {
-				_, err := runSSHCommand(vmName, testNamespace, setupCmd, privateKeyPath)
-				g.Expect(err).NotTo(HaveOccurred(), "Guest helper installation failed")
-			}, 2*time.Minute, 10*time.Second).Should(Succeed())
-			_, _ = fmt.Fprintf(GinkgoWriter, "Guest helper installed\n")
-
-			// Phase 4: Create test user and download test file
 			By("creating test user")
-			_, err = runSSHCommand(vmName, testNamespace, fmt.Sprintf("useradd -m -s /bin/bash %s", testUser), privateKeyPath)
+			useraddCmd := fmt.Sprintf("useradd -m -s /bin/bash %s", testUser)
+			_, err := runSSHCommand(vmName, env.Namespace, useraddCmd, env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create test user")
 
 			By("creating test file")
-			// Create a 1GiB file quickly; content does not matter for restore validation.
-			createFileCmd := fmt.Sprintf(
-				"su - %s -c 'fallocate -l 1G %s && sync'",
-				testUser, testFilePath,
-			)
-			_, err = runSSHCommand(vmName, testNamespace, createFileCmd, privateKeyPath)
+			createFileCmd := fmt.Sprintf("su - %s -c 'fallocate -l 1G %s && sync'", testUser, testFilePath)
+			_, err = runSSHCommand(vmName, env.Namespace, createFileCmd, env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create test file")
-			_, _ = fmt.Fprintf(GinkgoWriter, "Test file created\n")
 
 			By("syncing filesystem to ensure data is written")
-			_, err = runSSHCommand(vmName, testNamespace, "sync", privateKeyPath)
+			_, err = runSSHCommand(vmName, env.Namespace, "sync", env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to sync filesystem")
 			time.Sleep(3 * time.Second)
 
 			By("recording original file size")
-			originalSize, err = getFileSizeFromVM(vmName, testNamespace, testFilePath, privateKeyPath)
+			originalSize, err := getFileSizeFromVM(vmName, env.Namespace, testFilePath, env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get file size")
-			Expect(originalSize).To(BeNumerically(">", 0), "Downloaded file is empty")
-			_, _ = fmt.Fprintf(GinkgoWriter, "Original file size: %d bytes\n", originalSize)
+			Expect(originalSize).To(BeNumerically(">", 0), "File is empty")
 
-			// Phase 5: Create VolumeSnapshot
 			By("creating VolumeSnapshot of boot disk")
-			pvcName := bootDiskName
-			err = createVolumeSnapshot(snapshotClient, k8sClient, testNamespace, pvcName, snapshotName)
+			err = createVolumeSnapshot(env.SnapshotClient, env.K8sClient, env.Namespace, bootDiskName, snapshotName)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create VolumeSnapshot")
 
 			By("waiting for VolumeSnapshot to be ready")
 			Eventually(func(g Gomega) {
-				snapshot, err := snapshotClient.SnapshotV1().VolumeSnapshots(testNamespace).Get(
-					context.Background(),
-					snapshotName,
-					metav1.GetOptions{},
+				snapshot, err := env.SnapshotClient.SnapshotV1().VolumeSnapshots(env.Namespace).Get(
+					context.Background(), snapshotName, metav1.GetOptions{},
 				)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get VolumeSnapshot")
 				g.Expect(snapshot.Status).NotTo(BeNil(), "VolumeSnapshot has no status")
 				g.Expect(snapshot.Status.ReadyToUse).NotTo(BeNil(), "VolumeSnapshot ReadyToUse is nil")
 				g.Expect(*snapshot.Status.ReadyToUse).To(BeTrue(), "VolumeSnapshot not ready")
 			}, 3*time.Minute, 10*time.Second).Should(Succeed())
-			_, _ = fmt.Fprintf(GinkgoWriter, "VolumeSnapshot %s is ready\n", snapshotName)
 
-			// Phase 5.5: Delete the file to verify restore actually works
 			By("deleting the test file to verify restore")
-			deleteCmd := fmt.Sprintf("rm -f %s", testFilePath)
-			_, err = runSSHCommand(vmName, testNamespace, deleteCmd, privateKeyPath)
+			_, err = runSSHCommand(vmName, env.Namespace, fmt.Sprintf("rm -f %s", testFilePath), env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete test file")
 
 			By("verifying file is actually deleted")
-			checkCmd := fmt.Sprintf("test ! -f %s", testFilePath)
-			_, err = runSSHCommand(vmName, testNamespace, checkCmd, privateKeyPath)
-			Expect(err).NotTo(HaveOccurred(), "File was not deleted (still exists)")
-			_, _ = fmt.Fprintf(GinkgoWriter, "Test file deleted successfully\n")
+			_, err = runSSHCommand(vmName, env.Namespace, fmt.Sprintf("test ! -f %s", testFilePath), env.PrivateKeyPath)
+			Expect(err).NotTo(HaveOccurred(), "File was not deleted")
 
-			// Phase 6: Create VirtualMachineFileRestore and wait for completion
 			By("creating VirtualMachineFileRestore CR")
 			err = createFileRestoreCR(
-				crClient, testNamespace, restoreCRName, vmName, snapshotName, fmt.Sprintf("/home/%s", testUser),
+				env.CRClient, env.Namespace, restoreCRName, vmName, snapshotName, fmt.Sprintf("/home/%s", testUser),
 			)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create restore CR")
 
 			By("waiting for restore to complete")
 			Eventually(func(g Gomega) {
 				restore := &filerestorev1alpha1.VirtualMachineFileRestore{}
-				err := crClient.Get(
-					context.Background(),
-					client.ObjectKey{Namespace: testNamespace, Name: restoreCRName},
-					restore,
-				)
+				err := env.CRClient.Get(context.Background(),
+					client.ObjectKey{Namespace: env.Namespace, Name: restoreCRName}, restore)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get restore CR")
 				g.Expect(restore.Status.Phase).To(Equal(filerestorev1alpha1.RestorePhaseSucceeded),
 					fmt.Sprintf("Restore phase is %s", restore.Status.Phase))
 			}, 5*time.Minute, 10*time.Second).Should(Succeed())
-			_, _ = fmt.Fprintf(GinkgoWriter, "File restore completed\n")
 
-			// Phase 7: Verify restored file
 			By("verifying restored file exists")
-			checkCmd = fmt.Sprintf("test -f %s", testFilePath)
-			_, err = runSSHCommand(vmName, testNamespace, checkCmd, privateKeyPath)
+			_, err = runSSHCommand(vmName, env.Namespace, fmt.Sprintf("test -f %s", testFilePath), env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Restored file does not exist")
 
 			By("verifying restored file size matches original")
-			restoredSize, err := getFileSizeFromVM(vmName, testNamespace, testFilePath, privateKeyPath)
+			restoredSize, err := getFileSizeFromVM(vmName, env.Namespace, testFilePath, env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to get restored file size")
 			Expect(restoredSize).To(Equal(originalSize), "File size mismatch")
-			_, _ = fmt.Fprintf(GinkgoWriter, "File size verified: %d bytes\n", restoredSize)
 
 			By("verifying file ownership")
-			ownerCmd := fmt.Sprintf("stat -c %%U %s", testFilePath)
-			owner, err := runSSHCommand(vmName, testNamespace, ownerCmd, privateKeyPath)
+			owner, err := runSSHCommand(vmName, env.Namespace, fmt.Sprintf("stat -c %%U %s", testFilePath), env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to check file owner")
 			Expect(owner).To(Equal(testUser), "File ownership incorrect")
 
 			By("verifying file is readable")
-			readCmd := fmt.Sprintf("test -r %s && echo readable || echo unreadable", testFilePath)
-			readOutput, err := runSSHCommand(vmName, testNamespace, readCmd, privateKeyPath)
+			readOutput, err := runSSHCommand(vmName, env.Namespace,
+				fmt.Sprintf("test -r %s && echo readable || echo unreadable", testFilePath), env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to check file readability")
 			Expect(readOutput).To(ContainSubstring("readable"), "File is not readable")
 		})
 
 		// Test manual restore mode where sourcePath is omitted
 		It("should support manual restore mode with volume hotplug", func() {
-			var (
-				k8sClient      *kubernetes.Clientset
-				virtClient     kubecli.KubevirtClient
-				snapshotClient snapshotclientset.Interface
-				crClient       client.Client
-				pubKey         string
-				privateKeyPath string
-				manualTestNS   string
-			)
+			env := setupTestVM("e2e-manual-restore")
 
-			// Initialize clients
-			By("initializing Kubernetes clients")
-			var err error
-			k8sClient, virtClient, snapshotClient, crClient, err = initClients()
-			Expect(err).NotTo(HaveOccurred(), "Failed to initialize clients")
-
-			// Create unique test namespace for manual restore test
-			By("creating unique test namespace")
-			manualTestNS = fmt.Sprintf("e2e-manual-restore-%d", time.Now().UnixNano())
-			ns := &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: manualTestNS,
-				},
-			}
-			_, err = k8sClient.CoreV1().Namespaces().Create(context.Background(), ns, metav1.CreateOptions{})
-			Expect(err).NotTo(HaveOccurred(), "Failed to create test namespace")
-			_, _ = fmt.Fprintf(GinkgoWriter, "Created test namespace: %s\n", manualTestNS)
-
-			DeferCleanup(func() {
-				By("cleaning up manual restore test resources")
-				if privateKeyPath != "" {
-					tmpDir := filepath.Dir(privateKeyPath)
-					_ = os.RemoveAll(tmpDir)
-				}
-				_ = k8sClient.CoreV1().Namespaces().Delete(
-					context.Background(),
-					manualTestNS,
-					metav1.DeleteOptions{},
-				)
-				_, _ = fmt.Fprintf(GinkgoWriter, "Manual restore test cleanup completed\n")
-			})
-
-			// Generate SSH keypair
-			By("generating temporary SSH keypair")
-			tmpDir, err := os.MkdirTemp("", "e2e-manual-ssh-")
-			Expect(err).NotTo(HaveOccurred(), "Failed to create temp directory")
-			privateKeyPath = tmpDir + "/id_ed25519"
-
-			cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-f", privateKeyPath, "-N", "", "-C", "e2e-manual-test")
-			keygenOutput, err := cmd.CombinedOutput()
-			Expect(err).NotTo(HaveOccurred(), "Failed to generate SSH keypair: %s", string(keygenOutput))
-
-			pubKeyBytes, err := os.ReadFile(privateKeyPath + ".pub")
-			Expect(err).NotTo(HaveOccurred(), "Failed to read public key")
-			pubKey = strings.TrimSpace(string(pubKeyBytes))
-
-			// Get operator's SSH public key
-			By("fetching operator's SSH public key")
-			cm, err := k8sClient.CoreV1().ConfigMaps(namespace).Get(
-				context.Background(),
-				"vm-file-restore-operator-ssh",
-				metav1.GetOptions{},
-			)
-			Expect(err).NotTo(HaveOccurred(), "Failed to get operator SSH ConfigMap")
-			operatorPubKey := cm.Data["ssh-publickey"]
-			Expect(operatorPubKey).NotTo(BeEmpty(), "Operator SSH public key is empty")
-
-			// Create VM
-			By("creating test VM")
-			err = createTestVM(virtClient, manualTestNS, vmName, pubKey, bootDiskName, bootDiskSize)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create VM")
-
-			By("waiting for VM to be running")
-			Eventually(func(g Gomega) {
-				vmi, err := virtClient.VirtualMachineInstance(manualTestNS).Get(context.Background(), vmName, metav1.GetOptions{})
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to get VMI")
-				g.Expect(vmi.Status.Phase).To(Equal(kubevirtv1.Running), "VMI not running")
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
-
-			By("waiting for SSH connectivity")
-			Eventually(func(g Gomega) {
-				_, err := runSSHCommand(vmName, manualTestNS, "echo ready", privateKeyPath)
-				g.Expect(err).NotTo(HaveOccurred(), "SSH not ready")
-			}, 5*time.Minute, 15*time.Second).Should(Succeed())
-
-			// Install guest helper
-			By("installing guest helper")
-			// Determine repo root from test file location
-			_, testFile, _, _ := goruntime.Caller(0)
-			repoRoot := filepath.Join(filepath.Dir(testFile), "../..")
-			setupScriptPath := filepath.Join(repoRoot, "guest-helpers/linux/setup.sh")
-			setupScript, err := os.ReadFile(setupScriptPath)
-			Expect(err).NotTo(HaveOccurred(), "Failed to read setup script")
-			setupCmd := fmt.Sprintf("cat <<'SETUP_EOF' | bash -s -- '%s'\n%s\nSETUP_EOF", operatorPubKey, string(setupScript))
-			Eventually(func(g Gomega) {
-				_, err := runSSHCommand(vmName, manualTestNS, setupCmd, privateKeyPath)
-				g.Expect(err).NotTo(HaveOccurred(), "Guest helper installation failed")
-			}, 2*time.Minute, 10*time.Second).Should(Succeed())
-
-			// Create test user (matching the automatic restore test)
 			By(fmt.Sprintf("creating test user %s", testUser))
-			_, err = runSSHCommand(vmName, manualTestNS, fmt.Sprintf("useradd -m -s /bin/bash %s", testUser), privateKeyPath)
+			useraddCmd := fmt.Sprintf("useradd -m -s /bin/bash %s", testUser)
+			_, err := runSSHCommand(vmName, env.Namespace, useraddCmd, env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create test user")
 
-			// Create test file in user's home directory (matching the automatic restore test)
 			By(fmt.Sprintf("creating test file in /home/%s", testUser))
 			testFileContent := "manual-restore-test-content-" + time.Now().String()
 			manualTestFile := fmt.Sprintf("/home/%s/test-manual-restore.txt", testUser)
 			createFileCmd := fmt.Sprintf("su - %s -c 'echo \"%s\" > %s' && sync", testUser, testFileContent, manualTestFile)
-			_, err = runSSHCommand(vmName, manualTestNS, createFileCmd, privateKeyPath)
+			_, err = runSSHCommand(vmName, env.Namespace, createFileCmd, env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create test file")
 
 			By("syncing filesystem to ensure data is written")
-			_, err = runSSHCommand(vmName, manualTestNS, "sync", privateKeyPath)
+			_, err = runSSHCommand(vmName, env.Namespace, "sync", env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to sync filesystem")
 			time.Sleep(3 * time.Second)
 
 			By("verifying test file exists before snapshot")
-			lsBeforeCmd := fmt.Sprintf("ls -la %s", manualTestFile)
-			lsBeforeOutput, err := runSSHCommand(vmName, manualTestNS, lsBeforeCmd, privateKeyPath)
+			_, err = runSSHCommand(vmName, env.Namespace, fmt.Sprintf("test -f %s", manualTestFile), env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Test file does not exist before snapshot")
-			_, _ = fmt.Fprintf(GinkgoWriter, "File before snapshot: %s\n", lsBeforeOutput)
 
-			// Create snapshot
 			By("creating VolumeSnapshot")
-			err = createVolumeSnapshot(snapshotClient, k8sClient, manualTestNS, bootDiskName, snapshotName)
+			err = createVolumeSnapshot(env.SnapshotClient, env.K8sClient, env.Namespace, bootDiskName, snapshotName)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create snapshot")
 
 			By("waiting for snapshot to be ready")
 			Eventually(func(g Gomega) {
-				snapshot, err := snapshotClient.SnapshotV1().VolumeSnapshots(manualTestNS).Get(
-					context.Background(),
-					snapshotName,
-					metav1.GetOptions{},
+				snapshot, err := env.SnapshotClient.SnapshotV1().VolumeSnapshots(env.Namespace).Get(
+					context.Background(), snapshotName, metav1.GetOptions{},
 				)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get VolumeSnapshot")
 				g.Expect(snapshot.Status).NotTo(BeNil(), "VolumeSnapshot has no status")
@@ -600,18 +340,16 @@ var _ = Describe("Manager", Ordered, func() {
 				g.Expect(*snapshot.Status.ReadyToUse).To(BeTrue(), "VolumeSnapshot not ready")
 			}, 3*time.Minute, 10*time.Second).Should(Succeed())
 
-			// Delete the file to verify manual restore gives access to snapshot
 			By("deleting the test file")
-			_, err = runSSHCommand(vmName, manualTestNS, "rm -f "+manualTestFile, privateKeyPath)
+			_, err = runSSHCommand(vmName, env.Namespace, "rm -f "+manualTestFile, env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete test file")
 
-			// Create manual mode VMFR (no sourcePath)
 			By("creating manual-mode VirtualMachineFileRestore CR (no sourcePath)")
 			manualRestoreName := "manual-restore-test"
 			manualRestore := &filerestorev1alpha1.VirtualMachineFileRestore{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      manualRestoreName,
-					Namespace: manualTestNS,
+					Namespace: env.Namespace,
 				},
 				Spec: filerestorev1alpha1.VirtualMachineFileRestoreSpec{
 					Target: corev1.TypedLocalObjectReference{
@@ -624,70 +362,181 @@ var _ = Describe("Manager", Ordered, func() {
 							Name: snapshotName,
 						},
 					},
-					// No SourcePath - manual mode!
 				},
 			}
-			err = crClient.Create(context.Background(), manualRestore)
+			err = env.CRClient.Create(context.Background(), manualRestore)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create manual restore CR")
 
-			// Wait for VolumeReady phase
 			By("waiting for VolumeReady phase")
 			var mountPath string
 			Eventually(func(g Gomega) {
 				restore := &filerestorev1alpha1.VirtualMachineFileRestore{}
-				err := crClient.Get(
-					context.Background(),
-					client.ObjectKey{Namespace: manualTestNS, Name: manualRestoreName},
-					restore,
-				)
+				err := env.CRClient.Get(context.Background(),
+					client.ObjectKey{Namespace: env.Namespace, Name: manualRestoreName}, restore)
 				g.Expect(err).NotTo(HaveOccurred(), "Failed to get restore CR")
 				g.Expect(restore.Status.Phase).To(Equal(filerestorev1alpha1.RestorePhaseVolumeReady),
 					fmt.Sprintf("Restore phase is %s (expected VolumeReady)", restore.Status.Phase))
 				g.Expect(restore.Status.MountPath).NotTo(BeEmpty(), "MountPath not set")
 				mountPath = restore.Status.MountPath
 			}, 5*time.Minute, 10*time.Second).Should(Succeed())
-			_, _ = fmt.Fprintf(GinkgoWriter, "Volume mounted at: %s\n", mountPath)
 
-			// Verify mount path format
-			expectedMountPath := "/backup-" + snapshotName
-			Expect(mountPath).To(Equal(expectedMountPath), "MountPath format incorrect")
+			Expect(mountPath).To(Equal("/backup-"+snapshotName), "MountPath format incorrect")
 
-			// Verify files accessible from snapshot
 			By("verifying files are accessible from snapshot")
 			snapshotFilePath := mountPath + manualTestFile
 			Eventually(func(g Gomega) {
-				// Check mount point exists
-				checkMountCmd := fmt.Sprintf("test -d %s", mountPath)
-				_, err := runSSHCommand(vmName, manualTestNS, checkMountCmd, privateKeyPath)
+				_, err := runSSHCommand(vmName, env.Namespace, fmt.Sprintf("test -d %s", mountPath), env.PrivateKeyPath)
 				g.Expect(err).NotTo(HaveOccurred(), "Mount point does not exist")
-
-				// Check file exists in snapshot
-				checkFileCmd := fmt.Sprintf("test -f %s", snapshotFilePath)
-				_, err = runSSHCommand(vmName, manualTestNS, checkFileCmd, privateKeyPath)
+				_, err = runSSHCommand(vmName, env.Namespace, fmt.Sprintf("test -f %s", snapshotFilePath), env.PrivateKeyPath)
 				g.Expect(err).NotTo(HaveOccurred(), "File not accessible from snapshot mount")
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 			By("verifying file content from snapshot")
-			catCmd := fmt.Sprintf("cat %s", snapshotFilePath)
-			content, err := runSSHCommand(vmName, manualTestNS, catCmd, privateKeyPath)
+			content, err := runSSHCommand(vmName, env.Namespace, fmt.Sprintf("cat %s", snapshotFilePath), env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to read file from snapshot")
 			Expect(content).To(ContainSubstring(testFileContent), "File content mismatch")
-			_, _ = fmt.Fprintf(GinkgoWriter, "File verified from snapshot\n")
 
-			// Delete VMFR to unplug volume
 			By("deleting VirtualMachineFileRestore CR to unplug volume")
-			err = crClient.Delete(context.Background(), manualRestore)
+			err = env.CRClient.Delete(context.Background(), manualRestore)
 			Expect(err).NotTo(HaveOccurred(), "Failed to delete restore CR")
 
-			// Verify volume unmounted by checking mount table
 			By("verifying volume is unmounted after CR deletion")
 			Eventually(func(g Gomega) {
-				// Use mountpoint command to check if path is actually a mount point
-				checkMountCmd := fmt.Sprintf("mountpoint -q %s", mountPath)
-				_, err := runSSHCommand(vmName, manualTestNS, checkMountCmd, privateKeyPath)
+				_, err := runSSHCommand(vmName, env.Namespace, fmt.Sprintf("mountpoint -q %s", mountPath), env.PrivateKeyPath)
 				g.Expect(err).To(HaveOccurred(), "Volume still mounted after CR deletion")
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
-			_, _ = fmt.Fprintf(GinkgoWriter, "Volume successfully unmounted\n")
+		})
+
+		// When a snapshot of an LVM disk is hotplugged into the same VM, the snapshot
+		// carries identical VG/PV UUIDs to the already-active volume group, causing
+		// UUID collisions. The guest helper script must detect LVM2_member, use
+		// vgimportclone to reassign UUIDs, and mount the LV read-only.
+		It("should restore files from LVM-based VolumeSnapshot", func() {
+			const (
+				lvmDataDiskName = "lvm-data-dv"
+				lvmDataDiskSize = "2Gi"
+				lvmSnapshotName = "lvm-data-snap"
+				lvmRestoreName  = "lvm-restore-test"
+				lvmVGName       = "datavg"
+				lvmLVName       = "datalv"
+				lvmTestContent  = "lvm-restore-test-content-12345"
+				lvmSourcePath   = "/tmp/lvm-restore-data"
+			)
+
+			env := setupTestVM("e2e-lvm-restore", ExtraDisk{Name: lvmDataDiskName, Size: lvmDataDiskSize})
+
+			By("installing lvm2 package")
+			Eventually(func(g Gomega) {
+				_, err := runSSHCommand(vmName, env.Namespace, "dnf install -y lvm2", env.PrivateKeyPath)
+				g.Expect(err).NotTo(HaveOccurred(), "lvm2 installation failed")
+			}, 3*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("identifying the blank data disk inside the VM")
+			var dataDiskDevice string
+			Eventually(func(g Gomega) {
+				output, err := runSSHCommand(vmName, env.Namespace,
+					"lsblk -d -n -o NAME,SIZE,TYPE | grep disk | grep -v vda", env.PrivateKeyPath)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to list disks")
+				for _, line := range strings.Split(output, "\n") {
+					fields := strings.Fields(line)
+					if len(fields) >= 2 && fields[0] != "" {
+						checkCmd := fmt.Sprintf("blkid /dev/%s 2>/dev/null; echo $?", fields[0])
+						checkOutput, checkErr := runSSHCommand(vmName, env.Namespace, checkCmd, env.PrivateKeyPath)
+						if checkErr != nil {
+							continue
+						}
+						if strings.TrimSpace(checkOutput) == "2" {
+							dataDiskDevice = fields[0]
+							break
+						}
+					}
+				}
+				g.Expect(dataDiskDevice).NotTo(BeEmpty(), "Could not find blank data disk")
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("creating partition table and LVM on data disk")
+			lvmSetupScript := fmt.Sprintf(`set -ex
+parted -s /dev/%s mklabel gpt
+parted -s /dev/%s mkpart primary 1MiB 100%%
+sleep 2
+partprobe /dev/%s
+sleep 2
+PART=$(lsblk -ln -o NAME /dev/%s | tail -1)
+pvcreate /dev/$PART
+vgcreate %s /dev/$PART
+lvcreate -n %s -l 100%%FREE %s
+mkfs.ext4 /dev/%s/%s
+mkdir -p /mnt/lvmdata
+mount /dev/%s/%s /mnt/lvmdata
+mkdir -p /mnt/lvmdata%s
+echo '%s' > /mnt/lvmdata%s/testfile.txt
+mkdir -p /mnt/lvmdata%s/subdir
+echo 'nested-content' > /mnt/lvmdata%s/subdir/nested.txt
+sync
+umount /mnt/lvmdata
+`,
+				dataDiskDevice, dataDiskDevice, dataDiskDevice, dataDiskDevice,
+				lvmVGName, lvmLVName, lvmVGName,
+				lvmVGName, lvmLVName,
+				lvmVGName, lvmLVName,
+				lvmSourcePath, lvmTestContent, lvmSourcePath,
+				lvmSourcePath, lvmSourcePath,
+			)
+			output, err := runSSHCommandWithTimeout(vmName, env.Namespace, lvmSetupScript, env.PrivateKeyPath, 3*time.Minute)
+			Expect(err).NotTo(HaveOccurred(), "LVM setup failed: %s", output)
+
+			By("verifying LVM VG is active")
+			vgsOutput, err := runSSHCommand(vmName, env.Namespace, "vgs --noheadings -o vg_name", env.PrivateKeyPath)
+			Expect(err).NotTo(HaveOccurred(), "Failed to list VGs")
+			Expect(vgsOutput).To(ContainSubstring(lvmVGName), "VG not found")
+
+			_, err = runSSHCommand(vmName, env.Namespace, "sync", env.PrivateKeyPath)
+			Expect(err).NotTo(HaveOccurred(), "Failed to sync")
+			time.Sleep(3 * time.Second)
+
+			By("creating VolumeSnapshot of LVM data disk")
+			err = createVolumeSnapshot(env.SnapshotClient, env.K8sClient, env.Namespace, lvmDataDiskName, lvmSnapshotName)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create VolumeSnapshot")
+
+			Eventually(func(g Gomega) {
+				snapshot, err := env.SnapshotClient.SnapshotV1().VolumeSnapshots(env.Namespace).Get(
+					context.Background(), lvmSnapshotName, metav1.GetOptions{},
+				)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get VolumeSnapshot")
+				g.Expect(snapshot.Status).NotTo(BeNil(), "VolumeSnapshot has no status")
+				g.Expect(snapshot.Status.ReadyToUse).NotTo(BeNil(), "VolumeSnapshot ReadyToUse is nil")
+				g.Expect(*snapshot.Status.ReadyToUse).To(BeTrue(), "VolumeSnapshot not ready")
+			}, 3*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("creating automatic-mode VirtualMachineFileRestore CR for LVM snapshot")
+			err = createFileRestoreCR(env.CRClient, env.Namespace, lvmRestoreName, vmName, lvmSnapshotName, lvmSourcePath)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create LVM restore CR")
+
+			By("waiting for restore to complete")
+			Eventually(func(g Gomega) {
+				restore := &filerestorev1alpha1.VirtualMachineFileRestore{}
+				err := env.CRClient.Get(context.Background(),
+					client.ObjectKey{Namespace: env.Namespace, Name: lvmRestoreName}, restore)
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to get restore CR")
+				g.Expect(restore.Status.Phase).To(Equal(filerestorev1alpha1.RestorePhaseSucceeded),
+					fmt.Sprintf("Restore phase is %s, error: %s", restore.Status.Phase, restore.Status.ErrorMessage))
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+
+			By("verifying restored files")
+			content, err := runSSHCommand(vmName, env.Namespace,
+				fmt.Sprintf("cat %s/testfile.txt", lvmSourcePath), env.PrivateKeyPath)
+			Expect(err).NotTo(HaveOccurred(), "Failed to read restored file")
+			Expect(content).To(ContainSubstring(lvmTestContent), "File content mismatch")
+
+			nestedContent, err := runSSHCommand(vmName, env.Namespace,
+				fmt.Sprintf("cat %s/subdir/nested.txt", lvmSourcePath), env.PrivateKeyPath)
+			Expect(err).NotTo(HaveOccurred(), "Failed to read restored nested file")
+			Expect(nestedContent).To(ContainSubstring("nested-content"), "Nested file content mismatch")
+
+			By("verifying original VG is still active (no corruption)")
+			vgsAfter, err := runSSHCommand(vmName, env.Namespace, "vgs --noheadings -o vg_name", env.PrivateKeyPath)
+			Expect(err).NotTo(HaveOccurred(), "Failed to list VGs after restore")
+			Expect(vgsAfter).To(ContainSubstring(lvmVGName), "Original VG disappeared")
 		})
 	})
 

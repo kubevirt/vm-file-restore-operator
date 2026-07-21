@@ -1,0 +1,3 @@
+#!/bin/bash
+echo "vgs $*" >> "$MOCK_CALL_LOG"
+exit "${MOCK_VGS_EXIT:-1}"
