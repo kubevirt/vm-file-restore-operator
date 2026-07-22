@@ -741,7 +741,7 @@ func ParseRestoredFileCount(stdout string) int32 {
 
 func matchFileCount(line string) (int32, bool) {
 	var count int32
-	if n, _ := fmt.Sscanf(line, "%d files restored", &count); n == 1 {
+	if n, err := fmt.Sscanf(line, "%d files restored", &count); n == 1 && err == nil {
 		return count, true
 	}
 	return 0, false
