@@ -668,7 +668,7 @@ func handleCleanupPhase(ctx context.Context, r *VirtualMachineFileRestoreReconci
 		if errors.IsNotFound(err) {
 			// VM deleted during restore (issue #10)
 			// Check if we successfully restored files before VM was deleted
-			if vmfr.Status.RestoredFilesCount != nil && *vmfr.Status.RestoredFilesCount > 0 {
+			if vmfr.Status.RestoredFilesCount != nil {
 				logger.Info("Target VM was deleted after restore completed", "filesRestored", *vmfr.Status.RestoredFilesCount)
 				return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseSucceeded,
 					fmt.Sprintf("Restored %d files (VM was deleted during cleanup)", *vmfr.Status.RestoredFilesCount))

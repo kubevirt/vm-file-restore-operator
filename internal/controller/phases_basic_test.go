@@ -139,6 +139,48 @@ func TestDetectGuestOS_Empty(t *testing.T) {
 	assert.Equal(t, osTypeLinux, DetectGuestOS(vmi))
 }
 
+// Test RestoredFilesCount pointer semantics for VM-deleted-during-cleanup decision.
+// When RestoredFilesCount is non-nil (automatic mode ran), a VM deletion during cleanup
+// should be treated as success. When nil (manual mode), it should be treated as failure.
+func TestRestoredFilesCount_CleanupDecision(t *testing.T) {
+	int32Ptr := func(v int32) *int32 { return &v }
+
+	tests := []struct {
+		name              string
+		restoredFileCount *int32
+		expectSuccess     bool
+	}{
+		{
+			name:              "nil means no transfer — VM deletion is failure",
+			restoredFileCount: nil,
+			expectSuccess:     false,
+		},
+		{
+			name:              "0 means transfer ran with nothing to copy — VM deletion is success",
+			restoredFileCount: int32Ptr(0),
+			expectSuccess:     true,
+		},
+		{
+			name:              "positive count — VM deletion is success",
+			restoredFileCount: int32Ptr(5),
+			expectSuccess:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+				Status: restorev1alpha1.VirtualMachineFileRestoreStatus{
+					RestoredFilesCount: tt.restoredFileCount,
+				},
+			}
+			// This mirrors the condition at handleCleanupPhase when VM is not found
+			restoreCompleted := vmfr.Status.RestoredFilesCount != nil
+			assert.Equal(t, tt.expectSuccess, restoreCompleted)
+		})
+	}
+}
+
 // Test source validation logic
 func TestSourceValidation_Counts(t *testing.T) {
 	tests := []struct {
