@@ -41,9 +41,13 @@ function New-Junction { param([string]$Path, [string]$Target) cmd /c mklink /J "
 function Remove-Junction { param([string]$Path) cmd /c rmdir "$Path" 2>$null }
 function Invoke-Robocopy {
     param([string[]]$Arguments)
-    $script:RobocopyOutput = & robocopy @Arguments
-    $script:RobocopyOutput | Out-Host
-    return $LASTEXITCODE
+    # Capture stdout for summary parsing; filter stderr to avoid terminating errors
+    # under $ErrorActionPreference = 'Stop'. Exit code is stored in a script variable
+    # because returning it via 'return' would merge with Write-Output into an array.
+    $script:RobocopyOutput = & robocopy @Arguments 2>&1 |
+        Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+    $script:RobocopyExitCode = $LASTEXITCODE
+    Write-Output $script:RobocopyOutput
 }
 function Read-FileContent { param([string]$Path) return (Get-Content -Path $Path -Raw).Trim() }
 
@@ -243,6 +247,7 @@ function Invoke-FileRestore {
     }
 
     # --- Automatic mode: wrap in try/finally to guarantee cleanup ---
+    $script:RobocopyOutput = @()
     $copyFailed = $false
     try {
         # Construct relative backup path
@@ -270,12 +275,14 @@ function Invoke-FileRestore {
             if (-not (Test-Path $destDir)) {
                 New-Item -ItemType Directory -Path $destDir -Force | Out-Null
             }
-            $rcExit = Invoke-Robocopy -Arguments @("$srcDir", "$destDir", "$fileName", '/COPY:DATS', '/R:1', '/W:1')
+            Invoke-Robocopy -Arguments @("$srcDir", "$destDir", "$fileName", '/COPY:DATS', '/R:1', '/W:1')
+            $rcExit = $script:RobocopyExitCode
         } else {
             if (-not (Test-Path $SourcePath)) {
                 New-Item -ItemType Directory -Path $SourcePath -Force | Out-Null
             }
-            $rcExit = Invoke-Robocopy -Arguments @("$BackupPath", "$SourcePath", '/E', '/COPY:DATS', '/R:1', '/W:1')
+            Invoke-Robocopy -Arguments @("$BackupPath", "$SourcePath", '/E', '/COPY:DATS', '/R:1', '/W:1')
+            $rcExit = $script:RobocopyExitCode
         }
 
         # robocopy exit codes: 0-7 are success (bits indicate copied/extra/mismatched files), 8+ are errors

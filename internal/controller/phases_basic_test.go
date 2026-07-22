@@ -18,18 +18,8 @@ func TestParseRestoredFileCount(t *testing.T) {
 		expected int32
 	}{
 		{
-			name:     "pattern 1: N files restored",
+			name:     "N files restored",
 			stdout:   "[filerestore] 42 files restored\n",
-			expected: 42,
-		},
-		{
-			name:     "pattern 2: Restored N files",
-			stdout:   "[filerestore] Restored 42 files\n",
-			expected: 42,
-		},
-		{
-			name:     "pattern 3: N files",
-			stdout:   "[filerestore] 42 files\n",
 			expected: 42,
 		},
 		{
@@ -38,9 +28,9 @@ func TestParseRestoredFileCount(t *testing.T) {
 			expected: 42,
 		},
 		{
-			name:     "unparseable returns 0",
+			name:     "unparseable returns -1",
 			stdout:   "foo bar baz\n",
-			expected: 0,
+			expected: -1,
 		},
 		{
 			name:     "zero files",
@@ -49,18 +39,18 @@ func TestParseRestoredFileCount(t *testing.T) {
 		},
 		{
 			name:     "large count",
-			stdout:   "[filerestore] Restored 99999 files\n",
+			stdout:   "[filerestore] 99999 files restored\n",
 			expected: 99999,
 		},
 		{
 			name:     "empty stdout",
 			stdout:   "",
-			expected: 0,
+			expected: -1,
 		},
 		{
 			name:     "unprefixed lines are ignored",
 			stdout:   "42 files restored\n",
-			expected: 0,
+			expected: -1,
 		},
 		{
 			name:     "realistic combined rsync and helper output",

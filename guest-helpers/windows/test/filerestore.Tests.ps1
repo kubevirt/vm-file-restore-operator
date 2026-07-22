@@ -357,7 +357,7 @@ Describe 'Junction creation' {
 Describe 'Manual vs automatic mode' {
     BeforeEach {
         Initialize-RestoreMocks
-        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 0 -Copied 0 -Skipped 0; 0 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 0 -Copied 0 -Skipped 0; $script:RobocopyExitCode = 0 }
         Mock New-Item { }
     }
 
@@ -382,7 +382,7 @@ Describe 'Manual vs automatic mode' {
     }
 
     It 'automatic mode: robocopy success (exit 0-7) exits 0' {
-        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 1 -Copied 1 -Skipped 0; 1 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 1 -Copied 1 -Skipped 0; $script:RobocopyExitCode = 1 }
         Mock Join-Path { "$Path/$ChildPath" }
 
         $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', '/tmp/testdata')
@@ -390,7 +390,7 @@ Describe 'Manual vs automatic mode' {
     }
 
     It 'automatic mode: robocopy success emits file count from summary' {
-        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 5 -Copied 3 -Skipped 2; 1 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 5 -Copied 3 -Skipped 2; $script:RobocopyExitCode = 1 }
         Mock Join-Path { "$Path/$ChildPath" }
         Mock Test-Path { $true } -ParameterFilter { $Path -and $Path -notlike '*lockfile*' -and $PathType -ne 'Leaf' }
         Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }
@@ -403,7 +403,7 @@ Describe 'Manual vs automatic mode' {
     }
 
     It 'automatic mode: single file restore emits 1 files restored' {
-        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 1 -Copied 1 -Skipped 0; 1 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 1 -Copied 1 -Skipped 0; $script:RobocopyExitCode = 1 }
         Mock Join-Path { "$Path/$ChildPath" }
         Mock Test-Path { $true } -ParameterFilter { $Path -and $Path -notlike '*lockfile*' }
         Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }
@@ -415,7 +415,7 @@ Describe 'Manual vs automatic mode' {
     }
 
     It 'automatic mode: robocopy exit 0 emits 0 files restored' {
-        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 3 -Copied 0 -Skipped 3; 0 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 3 -Copied 0 -Skipped 3; $script:RobocopyExitCode = 0 }
         Mock Join-Path { "$Path/$ChildPath" }
 
         $output = Invoke-FileRestore @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', '/tmp/testdata') *>&1
@@ -425,7 +425,7 @@ Describe 'Manual vs automatic mode' {
     }
 
     It 'automatic mode: robocopy exit 7 is still success' {
-        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 5 -Copied 2 -Skipped 3; 7 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 5 -Copied 2 -Skipped 3; $script:RobocopyExitCode = 7 }
         Mock Join-Path { "$Path/$ChildPath" }
 
         $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', '/tmp/testdata')
@@ -433,7 +433,7 @@ Describe 'Manual vs automatic mode' {
     }
 
     It 'automatic mode: robocopy failure (exit 8+) exits 1' {
-        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 3 -Copied 0 -Failed 3; 8 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 3 -Copied 0 -Failed 3; $script:RobocopyExitCode = 8 }
         Mock Join-Path { "$Path/$ChildPath" }
 
         $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', '/tmp/testdata')
@@ -441,7 +441,7 @@ Describe 'Manual vs automatic mode' {
     }
 
     It 'automatic mode: file at drive root does not fail on New-Item' {
-        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 1 -Copied 1 -Skipped 0; 1 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 1 -Copied 1 -Skipped 0; $script:RobocopyExitCode = 1 }
         Mock Join-Path { "$Path/$ChildPath" }
         Mock Test-Path { $true } -ParameterFilter { $Path -and $Path -notlike '*lockfile*' }
         Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }
@@ -452,7 +452,7 @@ Describe 'Manual vs automatic mode' {
     }
 
     It 'automatic mode: robocopy exit 3 reports copied count from summary' {
-        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 5 -Copied 2 -Skipped 3; 3 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 5 -Copied 2 -Skipped 3; $script:RobocopyExitCode = 3 }
         Mock Join-Path { "$Path/$ChildPath" }
         Mock Test-Path { $true } -ParameterFilter { $Path -and $Path -notlike '*lockfile*' -and $PathType -ne 'Leaf' }
         Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }
@@ -465,7 +465,7 @@ Describe 'Manual vs automatic mode' {
     }
 
     It 'automatic mode: trailing backslash on --source-path succeeds' {
-        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 0 -Copied 0 -Skipped 0; 0 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 0 -Copied 0 -Skipped 0; $script:RobocopyExitCode = 0 }
         Mock Join-Path { "$Path/$ChildPath" }
 
         $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', 'C:\test\')
@@ -474,7 +474,7 @@ Describe 'Manual vs automatic mode' {
     }
 
     It 'automatic mode: trailing backslash is treated as directory restore' {
-        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 0 -Copied 0 -Skipped 0; 0 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 0 -Copied 0 -Skipped 0; $script:RobocopyExitCode = 0 }
         Mock Join-Path { "$Path/$ChildPath" }
         Mock Test-Path { $true } -ParameterFilter { $Path -and $Path -notlike '*lockfile*' -and $PathType -ne 'Leaf' }
         Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }

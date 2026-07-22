@@ -618,8 +618,9 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 	} else {
 		// Automatic mode: parse file count and transition to Cleanup
 		fileCount := ParseRestoredFileCount(stdout)
-		if fileCount == 0 && strings.TrimSpace(stdout) != "" {
-			logger.Info("WARNING: parsed 0 files but stdout was non-empty, the guest helper may not have emitted a count line")
+		if fileCount < 0 {
+			logger.Info("WARNING: guest helper did not emit a file count line; reporting 0")
+			fileCount = 0
 		}
 		vmfr.Status.RestoredFilesCount = &fileCount
 		nextPhase = restorev1alpha1.RestorePhaseCleanup
@@ -637,7 +638,7 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 	// Log transition and emit event
 	r.Recorder.Event(vmfr, corev1.EventTypeNormal, string(nextPhase), eventMsg)
 	logger.Info("Phase transition", "oldPhase", restorev1alpha1.RestorePhaseRestoring,
-		"newPhase", nextPhase, "filesRestored", vmfr.Status.RestoredFilesCount)
+		"newPhase", nextPhase)
 
 	return ctrl.Result{Requeue: true}, nil
 }
@@ -723,6 +724,7 @@ func handleCleanupPhase(ctx context.Context, r *VirtualMachineFileRestoreReconci
 // ParseRestoredFileCount extracts a file count from guest helper stdout.
 // Only lines carrying the "[filerestore] " prefix are considered, avoiding
 // false positives from rsync/robocopy verbose output (e.g. filenames starting with digits).
+// Returns -1 when no parseable count line is found.
 func ParseRestoredFileCount(stdout string) int32 {
 	const prefix = "[filerestore] "
 	for _, line := range strings.Split(stdout, "\n") {
@@ -734,18 +736,12 @@ func ParseRestoredFileCount(stdout string) int32 {
 			return count
 		}
 	}
-	return 0
+	return -1
 }
 
 func matchFileCount(line string) (int32, bool) {
 	var count int32
 	if n, _ := fmt.Sscanf(line, "%d files restored", &count); n == 1 {
-		return count, true
-	}
-	if n, _ := fmt.Sscanf(line, "Restored %d files", &count); n == 1 {
-		return count, true
-	}
-	if n, _ := fmt.Sscanf(line, "%d files", &count); n == 1 {
 		return count, true
 	}
 	return 0, false
