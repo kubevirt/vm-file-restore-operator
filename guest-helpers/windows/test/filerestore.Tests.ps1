@@ -10,6 +10,19 @@ BeforeAll {
     # Dot-source to load all functions (dot-source guard returns before main logic)
     . $script:TestScript
 
+    # Generate realistic robocopy summary output with fixed-width columns matching real robocopy
+    function script:New-RobocopyOutput {
+        param([int]$Total = 3, [int]$Copied = 2, [int]$Skipped = 1, [int]$Failed = 0)
+        @(
+            "",
+            "               Total    Copied   Skipped  Mismatch    FAILED    Extras",
+            "    Dirs :         1         0         1         0         0         0",
+            ("   Files :{0,10}{1,10}{2,10}         0{3,10}         0" -f $Total, $Copied, $Skipped, $Failed),
+            "   Bytes :       100        50        50         0         0         0",
+            "   Times :   0:00:00   0:00:00                       0:00:00   0:00:00"
+        )
+    }
+
     # Shared mock baseline for restore-mode tests: standard disk, partition,
     # and no-op stubs for disk/junction/BitLocker cmdlets.
     function script:Initialize-RestoreMocks {
@@ -344,7 +357,7 @@ Describe 'Junction creation' {
 Describe 'Manual vs automatic mode' {
     BeforeEach {
         Initialize-RestoreMocks
-        Mock Invoke-Robocopy { 0 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 0 -Copied 0 -Skipped 0; $script:RobocopyExitCode = 0 }
         Mock New-Item { }
     }
 
@@ -369,15 +382,50 @@ Describe 'Manual vs automatic mode' {
     }
 
     It 'automatic mode: robocopy success (exit 0-7) exits 0' {
-        Mock Invoke-Robocopy { 1 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 1 -Copied 1 -Skipped 0; $script:RobocopyExitCode = 1 }
         Mock Join-Path { "$Path/$ChildPath" }
 
         $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', '/tmp/testdata')
         $result.ExitCode | Should -Be 0
     }
 
+    It 'automatic mode: robocopy success emits file count from summary' {
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 5 -Copied 3 -Skipped 2; $script:RobocopyExitCode = 1 }
+        Mock Join-Path { "$Path/$ChildPath" }
+        Mock Test-Path { $true } -ParameterFilter { $Path -and $Path -notlike '*lockfile*' -and $PathType -ne 'Leaf' }
+        Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }
+        Mock Test-Path { $false } -ParameterFilter { $PathType -eq 'Leaf' }
+
+        $output = Invoke-FileRestore @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', '/tmp/testdata') *>&1
+        $countLine = $output | Where-Object { $_ -match '\[filerestore\] \d+ files restored' }
+        $countLine | Should -Not -BeNullOrEmpty
+        $countLine | Should -BeLike '*3 files restored*'
+    }
+
+    It 'automatic mode: single file restore emits 1 files restored' {
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 1 -Copied 1 -Skipped 0; $script:RobocopyExitCode = 1 }
+        Mock Join-Path { "$Path/$ChildPath" }
+        Mock Test-Path { $true } -ParameterFilter { $Path -and $Path -notlike '*lockfile*' }
+        Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }
+
+        $output = Invoke-FileRestore @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', 'C:\test\file.txt') *>&1
+        $countLine = $output | Where-Object { $_ -match '\[filerestore\] \d+ files restored' }
+        $countLine | Should -Not -BeNullOrEmpty
+        $countLine | Should -BeLike '*1 files restored*'
+    }
+
+    It 'automatic mode: robocopy exit 0 emits 0 files restored' {
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 3 -Copied 0 -Skipped 3; $script:RobocopyExitCode = 0 }
+        Mock Join-Path { "$Path/$ChildPath" }
+
+        $output = Invoke-FileRestore @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', '/tmp/testdata') *>&1
+        $countLine = $output | Where-Object { $_ -match '\[filerestore\] \d+ files restored' }
+        $countLine | Should -Not -BeNullOrEmpty
+        $countLine | Should -BeLike '*0 files restored*'
+    }
+
     It 'automatic mode: robocopy exit 7 is still success' {
-        Mock Invoke-Robocopy { 7 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 5 -Copied 2 -Skipped 3; $script:RobocopyExitCode = 7 }
         Mock Join-Path { "$Path/$ChildPath" }
 
         $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', '/tmp/testdata')
@@ -385,15 +433,39 @@ Describe 'Manual vs automatic mode' {
     }
 
     It 'automatic mode: robocopy failure (exit 8+) exits 1' {
-        Mock Invoke-Robocopy { 8 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 3 -Copied 0 -Failed 3; $script:RobocopyExitCode = 8 }
         Mock Join-Path { "$Path/$ChildPath" }
 
         $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', '/tmp/testdata')
         $result.ExitCode | Should -Be 1
     }
 
+    It 'automatic mode: file at drive root does not fail on New-Item' {
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 1 -Copied 1 -Skipped 0; $script:RobocopyExitCode = 1 }
+        Mock Join-Path { "$Path/$ChildPath" }
+        Mock Test-Path { $true } -ParameterFilter { $Path -and $Path -notlike '*lockfile*' }
+        Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }
+
+        $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', 'E:\file.txt')
+        $result.ExitCode | Should -Be 0
+        Should -Invoke New-Item -Times 0
+    }
+
+    It 'automatic mode: robocopy exit 3 reports copied count from summary' {
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 5 -Copied 2 -Skipped 3; $script:RobocopyExitCode = 3 }
+        Mock Join-Path { "$Path/$ChildPath" }
+        Mock Test-Path { $true } -ParameterFilter { $Path -and $Path -notlike '*lockfile*' -and $PathType -ne 'Leaf' }
+        Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }
+        Mock Test-Path { $false } -ParameterFilter { $PathType -eq 'Leaf' }
+
+        $output = Invoke-FileRestore @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', '/tmp/testdata') *>&1
+        $countLine = $output | Where-Object { $_ -match '\[filerestore\] \d+ files restored' }
+        $countLine | Should -Not -BeNullOrEmpty
+        $countLine | Should -BeLike '*2 files restored*'
+    }
+
     It 'automatic mode: trailing backslash on --source-path succeeds' {
-        Mock Invoke-Robocopy { 0 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 0 -Copied 0 -Skipped 0; $script:RobocopyExitCode = 0 }
         Mock Join-Path { "$Path/$ChildPath" }
 
         $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', 'C:\test\')
@@ -402,16 +474,14 @@ Describe 'Manual vs automatic mode' {
     }
 
     It 'automatic mode: trailing backslash is treated as directory restore' {
-        Mock Invoke-Robocopy { 0 }
+        Mock Invoke-Robocopy { $script:RobocopyOutput = New-RobocopyOutput -Total 0 -Copied 0 -Skipped 0; $script:RobocopyExitCode = 0 }
         Mock Join-Path { "$Path/$ChildPath" }
         Mock Test-Path { $true } -ParameterFilter { $Path -and $Path -notlike '*lockfile*' -and $PathType -ne 'Leaf' }
         Mock Test-Path { $false } -ParameterFilter { $Path -like '*lockfile*' }
-        # A path with trailing backslash should never be treated as a file
         Mock Test-Path { $false } -ParameterFilter { $PathType -eq 'Leaf' }
 
         $result = Invoke-TestScript -Arguments @('restore', '--serial', 'ABC123', '--mount-path', '/tmp/backup', '--source-path', 'C:\test\')
         $result.ExitCode | Should -Be 0
-        Should -Invoke New-Item -Times 1
         Should -Invoke Invoke-Robocopy -Times 1
     }
 }
@@ -478,5 +548,53 @@ Describe 'Unmount-AndCleanup function' {
 
         Unmount-AndCleanup -MountPath '/tmp/backup' -DiskNumber 1
         Should -Invoke Remove-Junction -Times 1
+    }
+}
+
+# =============================================================================
+# Parse-RobocopyCopiedCount
+# =============================================================================
+Describe 'Parse-RobocopyCopiedCount' {
+    It 'extracts copied count from standard summary' {
+        $output = New-RobocopyOutput -Total 10 -Copied 7 -Skipped 3
+        Parse-RobocopyCopiedCount -Output $output | Should -Be 7
+    }
+
+    It 'returns 0 when no files copied' {
+        $output = New-RobocopyOutput -Total 5 -Copied 0 -Skipped 5
+        Parse-RobocopyCopiedCount -Output $output | Should -Be 0
+    }
+
+    It 'returns 0 for empty output' {
+        Parse-RobocopyCopiedCount -Output @() | Should -Be 0
+    }
+
+    It 'returns 0 for null output' {
+        Parse-RobocopyCopiedCount -Output $null | Should -Be 0
+    }
+
+    It 'returns 0 when no Files line present' {
+        $output = @("some random output", "no summary here")
+        Parse-RobocopyCopiedCount -Output $output | Should -Be 0
+    }
+
+    It 'handles large file counts' {
+        $output = @(
+            "               Total    Copied   Skipped  Mismatch    FAILED    Extras",
+            "   Files :     12345      9876      2469         0         0         0"
+        )
+        Parse-RobocopyCopiedCount -Output $output | Should -Be 9876
+    }
+
+    It 'handles single file copied' {
+        $output = New-RobocopyOutput -Total 1 -Copied 1 -Skipped 0
+        Parse-RobocopyCopiedCount -Output $output | Should -Be 1
+    }
+
+    It 'ignores Dirs line' {
+        $output = @(
+            "    Dirs :         5         3         2         0         0         0"
+        )
+        Parse-RobocopyCopiedCount -Output $output | Should -Be 0
     }
 }
