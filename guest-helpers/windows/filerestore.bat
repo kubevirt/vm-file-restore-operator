@@ -42,12 +42,10 @@ function Remove-Junction { param([string]$Path) cmd /c rmdir "$Path" 2>$null }
 function Invoke-Robocopy {
     param([string[]]$Arguments)
     # Capture stdout for summary parsing; filter stderr to avoid terminating errors
-    # under $ErrorActionPreference = 'Stop'. Exit code is stored in a script variable
-    # because returning it via 'return' would merge with Write-Output into an array.
+    # under $ErrorActionPreference = 'Stop'.
     $script:RobocopyOutput = & robocopy @Arguments 2>&1 |
         Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
     $script:RobocopyExitCode = $LASTEXITCODE
-    Write-Output $script:RobocopyOutput
 }
 function Read-FileContent { param([string]$Path) return (Get-Content -Path $Path -Raw).Trim() }
 
