@@ -367,3 +367,14 @@ load 'test_helper'
     assert_success
     assert_output --partial "[filerestore] 1 files restored"
 }
+
+@test "auto: rsync created directory lines are excluded from file count" {
+    export MOCK_LSBLK_SERIAL_OUTPUT="sdb ABC123"
+    export MOCK_BLKID_OUTPUT="ext4"
+    export MOCK_RSYNC_OUTPUT=$'sending incremental file list\ncreated directory /data\ndata/\ndata/file.txt\n\nsent 100 bytes  received 50 bytes  300.00 bytes/sec\ntotal size is 14  speedup is 0.09'
+    mkdir -p "$TEST_MOUNT_DIR/./data"
+    touch "$TEST_MOUNT_DIR/./data/file.txt"
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path /data/file.txt
+    assert_success
+    assert_output --partial "[filerestore] 1 files restored"
+}

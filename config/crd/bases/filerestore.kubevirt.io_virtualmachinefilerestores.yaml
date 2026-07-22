@@ -256,7 +256,7 @@ spec:
               restoredFilesCount:
                 description: |-
                   RestoredFilesCount is the number of files successfully restored.
-                  null when no automatic file transfer was performed (manual mode or not yet started);
+                  Omitted when no automatic file transfer was performed (manual mode or not yet started);
                   0 means the transfer ran but no files were copied (e.g. files already up-to-date).
                 format: int32
                 type: integer
