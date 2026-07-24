@@ -375,6 +375,24 @@ func createFileRestoreCR(crClient client.Client, ns, restoreName, targetVM, snap
 	return crClient.Create(context.Background(), restore)
 }
 
+// createFileRestoreOperatorCR creates the operator configuration CR via the API
+// (no dependency on config/samples YAML on disk — required for standalone QE binaries).
+func createFileRestoreOperatorCR(crClient client.Client, namespace, name string) error {
+	fro := &filerestorev1alpha1.FileRestoreOperator{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: filerestorev1alpha1.FileRestoreOperatorSpec{
+			ImagePullPolicy: corev1.PullIfNotPresent,
+		},
+	}
+	if err := crClient.Create(context.Background(), fro); err != nil {
+		return fmt.Errorf("failed to create FileRestoreOperator %s/%s: %w", namespace, name, err)
+	}
+	return nil
+}
+
 // serviceAccountToken returns a token for the specified service account in the given namespace.
 // It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
 // and parsing the resulting token from the API response.

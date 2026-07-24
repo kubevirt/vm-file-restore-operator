@@ -22,18 +22,24 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2" // nolint:revive,staticcheck
 )
 
-// Run executes the provided command within this context
+// Run executes the provided command within this context.
+// When a project checkout with go.mod is available (local kubevirtci), commands
+// run from the repo root. Standalone QE binaries have no checkout — then the
+// command runs in the current working directory.
 func Run(cmd *exec.Cmd) (string, error) {
-	dir, _ := GetProjectDir()
-	cmd.Dir = dir
-
-	if err := os.Chdir(cmd.Dir); err != nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "chdir dir: %q\n", err)
+	if dir, err := GetProjectDir(); err == nil {
+		if _, statErr := os.Stat(filepath.Join(dir, "go.mod")); statErr == nil {
+			cmd.Dir = dir
+			if err := os.Chdir(cmd.Dir); err != nil {
+				_, _ = fmt.Fprintf(GinkgoWriter, "chdir dir: %q\n", err)
+			}
+		}
 	}
 
 	cmd.Env = append(os.Environ(), "GO111MODULE=on")
@@ -119,6 +125,5 @@ func UncommentCode(filename, target, prefix string) error {
 	if err = os.WriteFile(filename, out.Bytes(), 0644); err != nil {
 		return fmt.Errorf("failed to write file %q: %w", filename, err)
 	}
-
 	return nil
 }

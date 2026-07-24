@@ -94,16 +94,22 @@ if ! visudo -c -f /etc/sudoers.d/filerestore >/dev/null 2>&1; then
 fi
 echo "  Sudoers configured: /etc/sudoers.d/filerestore"
 
-# Download and install helper script
+# Install helper script (prefer a pre-staged file for offline / QE installs)
 echo "Installing filerestore.sh helper script..."
+STAGED_HELPER="/tmp/filerestore-operator-helper.sh"
 SCRIPT_URL="https://raw.githubusercontent.com/kubevirt/vm-file-restore-operator/refs/heads/main/guest-helpers/linux/filerestore.sh"
 
-if command -v curl >/dev/null 2>&1; then
+if [ -f "$STAGED_HELPER" ]; then
+    cp "$STAGED_HELPER" /usr/local/bin/filerestore.sh
+    echo "  Installed from staged file: $STAGED_HELPER"
+elif command -v curl >/dev/null 2>&1; then
     curl -sSL -o /usr/local/bin/filerestore.sh "$SCRIPT_URL"
+    echo "  Downloaded from: $SCRIPT_URL"
 elif command -v wget >/dev/null 2>&1; then
     wget -q -O /usr/local/bin/filerestore.sh "$SCRIPT_URL"
+    echo "  Downloaded from: $SCRIPT_URL"
 else
-    echo "ERROR: Neither curl nor wget found. Please install one and retry."
+    echo "ERROR: No staged helper at $STAGED_HELPER, and neither curl nor wget found."
     exit 1
 fi
 

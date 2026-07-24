@@ -36,3 +36,7 @@ config/manager/kustomization.yaml
 
 # Test
 testResults.xml
+
+# Local Go module/build caches (created if GOPATH/GOCACHE point into the repo)
+.gopath/
+.gocache/
