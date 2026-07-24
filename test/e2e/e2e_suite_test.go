@@ -50,10 +50,12 @@ var _ = BeforeSuite(func() {
 	_, _ = fmt.Fprintf(GinkgoWriter, "Using KUBECONFIG: %s\n", kubeconfig)
 
 	By("verifying operator is deployed")
-	cmd := exec.Command("kubectl", "get", "deployment", "-n", "file-restore", "vm-file-restore-operator")
+	cmd := exec.Command("kubectl", "get", "deployment",
+		"-n", operatorNamespace(), operatorDeploymentName())
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(),
-		"Operator deployment not found. Run 'make cluster-sync' to deploy the operator first.")
+		"Operator deployment not found in namespace %q. Deploy the operator before running tests "+
+			"(e.g. 'make cluster-sync' or QE setup.sh).", operatorNamespace())
 })
 
 var _ = AfterSuite(func() {
