@@ -602,47 +602,32 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 
 	logger.Info("Restore command completed", "stdout", stdout, "stderr", stderr)
 
-	// Parse output for file count (issue #8: fix parsing, issue #20: parse multiple patterns)
-	// Expected output formats: "42 files restored", "Restored 42 files", "42 files"
-	fileCount := int32(0)
-	for _, line := range strings.Split(stdout, "\n") {
-		var count int32
-		// Try common patterns
-		if n, _ := fmt.Sscanf(line, "%d files restored", &count); n == 1 {
-			fileCount = count
-			break
-		}
-		if n, _ := fmt.Sscanf(line, "Restored %d files", &count); n == 1 {
-			fileCount = count
-			break
-		}
-		if n, _ := fmt.Sscanf(line, "%d files", &count); n == 1 {
-			fileCount = count
-			break
-		}
-	}
-
-	logger.Info("File restore completed", "filesRestored", fileCount)
-
 	// Determine next phase based on mode
 	var nextPhase restorev1alpha1.RestorePhase
 	var eventMsg string
 
+	// Update file count and transition phase atomically (issue #9)
+	patch := client.MergeFrom(vmfr.DeepCopy())
+
 	if vmfr.Spec.SourcePath == "" {
 		// Manual mode: volume is mounted, transition to VolumeReady
+		// RestoredFilesCount stays nil (no automatic file transfer performed)
 		nextPhase = restorev1alpha1.RestorePhaseVolumeReady
 		eventMsg = "Volume mounted at " + vmfr.Status.MountPath + ", ready for manual restore"
 		logger.Info("Manual mode: transitioning to VolumeReady")
 	} else {
-		// Automatic mode: files restored, transition to Cleanup
+		// Automatic mode: parse file count and transition to Cleanup
+		fileCount := ParseRestoredFileCount(stdout)
+		if fileCount < 0 {
+			logger.Info("WARNING: guest helper did not emit a file count line; reporting 0")
+			fileCount = 0
+		}
+		vmfr.Status.RestoredFilesCount = &fileCount
 		nextPhase = restorev1alpha1.RestorePhaseCleanup
 		eventMsg = fmt.Sprintf("Restored %d files, cleaning up", fileCount)
 		logger.Info("Automatic mode: transitioning to Cleanup", "filesRestored", fileCount)
 	}
 
-	// Update file count and transition phase atomically (issue #9)
-	patch := client.MergeFrom(vmfr.DeepCopy())
-	vmfr.Status.RestoredFilesCount = fileCount
 	vmfr.Status.Phase = nextPhase
 
 	if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
@@ -653,7 +638,7 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 	// Log transition and emit event
 	r.Recorder.Event(vmfr, corev1.EventTypeNormal, string(nextPhase), eventMsg)
 	logger.Info("Phase transition", "oldPhase", restorev1alpha1.RestorePhaseRestoring,
-		"newPhase", nextPhase, "filesRestored", fileCount)
+		"newPhase", nextPhase)
 
 	return ctrl.Result{Requeue: true}, nil
 }
@@ -683,10 +668,10 @@ func handleCleanupPhase(ctx context.Context, r *VirtualMachineFileRestoreReconci
 		if errors.IsNotFound(err) {
 			// VM deleted during restore (issue #10)
 			// Check if we successfully restored files before VM was deleted
-			if vmfr.Status.RestoredFilesCount > 0 {
-				logger.Info("Target VM was deleted after restore completed", "filesRestored", vmfr.Status.RestoredFilesCount)
+			if vmfr.Status.RestoredFilesCount != nil {
+				logger.Info("Target VM was deleted after restore completed", "filesRestored", *vmfr.Status.RestoredFilesCount)
 				return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseSucceeded,
-					fmt.Sprintf("Restored %d files (VM was deleted during cleanup)", vmfr.Status.RestoredFilesCount))
+					fmt.Sprintf("Restored %d files (VM was deleted during cleanup)", *vmfr.Status.RestoredFilesCount))
 			}
 			// VM deleted before restore completed
 			return failRestore(ctx, r, vmfr, err, "target VM was deleted before restore could complete")
@@ -729,6 +714,35 @@ func handleCleanupPhase(ctx context.Context, r *VirtualMachineFileRestoreReconci
 	r.Recorder.Event(vmfr, corev1.EventTypeNormal, "VolumeUnplugged", "Volume unplugged from VM")
 
 	// Transition to Succeeded
-	filesRestored := vmfr.Status.RestoredFilesCount
+	var filesRestored int32
+	if vmfr.Status.RestoredFilesCount != nil {
+		filesRestored = *vmfr.Status.RestoredFilesCount
+	}
 	return transitionPhase(ctx, r, vmfr, restorev1alpha1.RestorePhaseSucceeded, fmt.Sprintf("Restore completed successfully (%d files)", filesRestored))
+}
+
+// ParseRestoredFileCount extracts a file count from guest helper stdout.
+// Only lines carrying the "[filerestore] " prefix are considered, avoiding
+// false positives from rsync/robocopy verbose output (e.g. filenames starting with digits).
+// Returns -1 when no parseable count line is found.
+func ParseRestoredFileCount(stdout string) int32 {
+	const prefix = "[filerestore] "
+	for _, line := range strings.Split(stdout, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		if count, ok := matchFileCount(strings.TrimPrefix(line, prefix)); ok {
+			return count
+		}
+	}
+	return -1
+}
+
+func matchFileCount(line string) (int32, bool) {
+	var count int32
+	if n, err := fmt.Sscanf(line, "%d files restored", &count); n == 1 && err == nil {
+		return count, true
+	}
+	return 0, false
 }
