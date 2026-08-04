@@ -159,7 +159,6 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 												Args: []string{
 													"--leader-elect",
 													"--health-probe-bind-address=:8081",
-													"--webhook-cert-path=/apiserver.local.config/certificates",
 												},
 												Env: []corev1.EnvVar{
 													{
