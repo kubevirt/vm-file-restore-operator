@@ -33,11 +33,15 @@ import (
 // FileRestoreOperatorReconciler reconciles a FileRestoreOperator object
 type FileRestoreOperatorReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme            *runtime.Scheme
+	OperatorNamespace string
 }
 
 // +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=filerestoreoperators,verbs=get;list;watch
 // +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=filerestoreoperators/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=servicemonitors;prometheusrules,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop
 func (r *FileRestoreOperatorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -53,6 +57,15 @@ func (r *FileRestoreOperatorReconciler) Reconcile(ctx context.Context, req ctrl.
 		}
 		logger.Error(err, "Failed to get FileRestoreOperator")
 		return ctrl.Result{}, fmt.Errorf("failed to get FileRestoreOperator %s: %w", req.NamespacedName, err)
+	}
+
+	// Ensure monitoring resources exist
+	namespace := r.OperatorNamespace
+	if namespace == "" {
+		namespace = req.Namespace
+	}
+	if err := ensurePrometheusResources(ctx, r.Client, r.Scheme, fileRestoreOperator, namespace); err != nil {
+		logger.Error(err, "Failed to ensure prometheus resources")
 	}
 
 	// Update status if phase or generation changed

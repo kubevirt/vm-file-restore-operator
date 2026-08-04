@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
+	"kubevirt.io/vm-file-restore-operator/pkg/monitoring/metrics"
 )
 
 // getSourceName returns the source name (PVC or snapshot name) from the VMFR spec.
@@ -105,6 +106,18 @@ func transitionPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler
 		return ctrl.Result{}, err
 	}
 
+	// Record metrics
+	if (oldPhase == "" || oldPhase == restorev1alpha1.RestorePhaseNew) && newPhase == restorev1alpha1.RestorePhaseInit {
+		metrics.IncRestoresInProgress()
+	}
+	if newPhase == restorev1alpha1.RestorePhaseSucceeded {
+		metrics.DecRestoresInProgress()
+		metrics.IncRestoresTotal("succeeded")
+		if vmfr.Status.StartTime != nil {
+			metrics.ObserveRestoreDuration("succeeded", time.Since(vmfr.Status.StartTime.Time))
+		}
+	}
+
 	// Log transition
 	logger.Info("Phase transition",
 		"oldPhase", oldPhase,
@@ -165,6 +178,8 @@ func incrementRetryAndRequeue(ctx context.Context, r *VirtualMachineFileRestoreR
 func failRestore(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vmfr *restorev1alpha1.VirtualMachineFileRestore, err error, detail string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	oldPhase := vmfr.Status.Phase
+
 	// Create a copy for status update to avoid modifying in-memory object on failure
 	patch := client.MergeFrom(vmfr.DeepCopy())
 
@@ -193,6 +208,15 @@ func failRestore(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vm
 	if updateErr := r.Status().Patch(ctx, vmfr, patch); updateErr != nil {
 		logger.Error(updateErr, "Failed to update status during failure handling")
 		return ctrl.Result{}, updateErr
+	}
+
+	// Only decrement in-progress if the restore was actually counted
+	if oldPhase != "" && oldPhase != restorev1alpha1.RestorePhaseNew {
+		metrics.DecRestoresInProgress()
+	}
+	metrics.IncRestoresTotal("failed")
+	if vmfr.Status.StartTime != nil {
+		metrics.ObserveRestoreDuration("failed", time.Since(vmfr.Status.StartTime.Time))
 	}
 
 	// Log error

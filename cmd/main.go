@@ -40,10 +40,13 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	promv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 	"kubevirt.io/vm-file-restore-operator/internal/controller"
+	"kubevirt.io/vm-file-restore-operator/pkg/monitoring/metrics"
+	"kubevirt.io/vm-file-restore-operator/pkg/monitoring/rules"
 	"kubevirt.io/vm-file-restore-operator/pkg/resources/utils"
 	// +kubebuilder:scaffold:imports
 )
@@ -59,6 +62,7 @@ func init() {
 	utilruntime.Must(cdiv1beta1.AddToScheme(scheme))
 	utilruntime.Must(kubevirtv1.AddToScheme(scheme))
 	utilruntime.Must(restorev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(promv1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -224,6 +228,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := metrics.SetupMetrics(); err != nil {
+		setupLog.Error(err, "unable to setup metrics")
+		os.Exit(1)
+	}
+	metrics.SetOperatorUp()
+
+	if err := rules.SetupRules(); err != nil {
+		setupLog.Error(err, "unable to setup prometheus rules")
+		os.Exit(1)
+	}
+
 	// Set cache on TLS watcher and add as runnable
 	managedTLSWatcher.SetCache(mgr.GetCache())
 	if err := mgr.Add(managedTLSWatcher); err != nil {
@@ -275,8 +290,9 @@ func main() {
 	}
 
 	if err := (&controller.FileRestoreOperatorReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		OperatorNamespace: operatorNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "FileRestoreOperator")
 		os.Exit(1)

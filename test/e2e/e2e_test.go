@@ -225,6 +225,9 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(metricsOutput).To(ContainSubstring(
 				"controller_runtime_reconcile_total",
 			))
+
+			By("verifying custom vm-file-restore metrics are exposed")
+			Expect(metricsOutput).To(ContainSubstring("kubevirt_vmfr_operator_up 1"))
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
