@@ -23,7 +23,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +32,7 @@ import (
 	ginkgo "github.com/onsi/ginkgo/v2"
 	gomega "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -48,7 +48,6 @@ import (
 )
 
 const (
-	namespace    = "file-restore"
 	vmName       = "fedora-file-restore-test"
 	bootDiskName = "fedora-boot-dv"
 	bootDiskSize = "10Gi"
@@ -107,8 +106,8 @@ func setupTestVM(nsPrefix string, extraDisks ...ExtraDisk) *TestEnv {
 	pubKey := strings.TrimSpace(string(pubKeyBytes))
 
 	ginkgo.By("fetching operator's SSH public key from ConfigMap")
-	cm, err := env.K8sClient.CoreV1().ConfigMaps(namespace).Get(
-		context.Background(), "vm-file-restore-operator-ssh", metav1.GetOptions{},
+	cm, err := env.K8sClient.CoreV1().ConfigMaps(operatorNamespace()).Get(
+		context.Background(), operatorSSHConfigMapName(), metav1.GetOptions{},
 	)
 	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to get operator SSH ConfigMap")
 	operatorPubKey := cm.Data["ssh-publickey"]
@@ -133,30 +132,10 @@ func setupTestVM(nsPrefix string, extraDisks ...ExtraDisk) *TestEnv {
 		g.Expect(err).NotTo(gomega.HaveOccurred(), "SSH not ready")
 	}, 5*time.Minute, 15*time.Second).Should(gomega.Succeed())
 
-	ginkgo.By("installing guest helper")
-	_, testFile, _, _ := goruntime.Caller(0)
-	repoRoot := filepath.Join(filepath.Dir(testFile), "../..")
-	setupScriptPath := filepath.Join(repoRoot, "guest-helpers/linux/setup.sh")
-	setupScript, err := os.ReadFile(setupScriptPath)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to read setup script")
-	setupCmd := fmt.Sprintf("cat <<'SETUP_EOF' | bash -s -- '%s'\n%s\nSETUP_EOF", operatorPubKey, string(setupScript))
+	ginkgo.By("installing guest helper with operator's SSH key")
 	gomega.Eventually(func(g gomega.Gomega) {
-		_, err := runSSHCommand(vmName, env.Namespace, setupCmd, env.PrivateKeyPath)
+		err := installGuestHelper(vmName, env.Namespace, operatorPubKey, env.PrivateKeyPath)
 		g.Expect(err).NotTo(gomega.HaveOccurred(), "Guest helper installation failed")
-	}, 2*time.Minute, 10*time.Second).Should(gomega.Succeed())
-
-	ginkgo.By("overwriting filerestore.sh with local version")
-	localScriptPath := filepath.Join(repoRoot, "guest-helpers/linux/filerestore.sh")
-	localScript, err := os.ReadFile(localScriptPath)
-	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to read local filerestore.sh")
-	installCmd := fmt.Sprintf(
-		"cat <<'SCRIPT_EOF' | sudo tee /usr/local/bin/filerestore.sh"+
-			" > /dev/null && sudo chmod +x /usr/local/bin/filerestore.sh\n%s\nSCRIPT_EOF",
-		string(localScript),
-	)
-	gomega.Eventually(func(g gomega.Gomega) {
-		_, err := runSSHCommand(vmName, env.Namespace, installCmd, env.PrivateKeyPath)
-		g.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to install local filerestore.sh")
 	}, 2*time.Minute, 10*time.Second).Should(gomega.Succeed())
 
 	return env
@@ -508,6 +487,24 @@ func createFileRestoreCR(crClient client.Client, ns, restoreName, targetVM, snap
 	}
 
 	return crClient.Create(context.Background(), restore)
+}
+
+// createFileRestoreOperatorCR creates the operator configuration CR via the API
+// (no dependency on config/samples YAML on disk — required for standalone QE binaries).
+func createFileRestoreOperatorCR(crClient client.Client, namespace, name string) error {
+	fro := &filerestorev1alpha1.FileRestoreOperator{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: filerestorev1alpha1.FileRestoreOperatorSpec{
+			ImagePullPolicy: corev1.PullIfNotPresent,
+		},
+	}
+	if err := crClient.Create(context.Background(), fro); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("failed to create FileRestoreOperator %s/%s: %w", namespace, name, err)
+	}
+	return nil
 }
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.

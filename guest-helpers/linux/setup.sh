@@ -3,6 +3,10 @@
 #
 # Usage:
 #   sudo ./setup.sh "ssh-ed25519 AAAA...xyz"
+#   sudo ./setup.sh "ssh-ed25519 AAAA...xyz" /root/.../filerestore.sh
+#
+# When a staged helper path is provided (offline / QE installs), it must exist
+# and be owned by root before it is copied to /usr/local/bin.
 #
 # This script:
 # - Creates the 'filerestore' user with sudo access
@@ -19,14 +23,15 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# Check argument
-if [ $# -ne 1 ]; then
-    echo "ERROR: Public key argument required"
-    echo "Usage: sudo $0 \"ssh-ed25519 AAAA...xyz\""
+# Check arguments
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+    echo "ERROR: Public key argument required (optional staged helper path)"
+    echo "Usage: sudo $0 \"ssh-ed25519 AAAA...xyz\" [staged-helper-path]"
     exit 1
 fi
 
 PUB_KEY="$1"
+STAGED_HELPER="${2:-}"
 
 # Validate public key format (basic check)
 if [[ ! "$PUB_KEY" =~ ^ssh- ]]; then
@@ -94,16 +99,40 @@ if ! visudo -c -f /etc/sudoers.d/filerestore >/dev/null 2>&1; then
 fi
 echo "  Sudoers configured: /etc/sudoers.d/filerestore"
 
-# Download and install helper script
+# Install helper script (prefer an explicitly staged file for offline / QE installs)
 echo "Installing filerestore.sh helper script..."
 SCRIPT_URL="https://raw.githubusercontent.com/kubevirt/vm-file-restore-operator/refs/heads/main/guest-helpers/linux/filerestore.sh"
 
-if command -v curl >/dev/null 2>&1; then
-    curl -sSL -o /usr/local/bin/filerestore.sh "$SCRIPT_URL"
+if [ -n "$STAGED_HELPER" ]; then
+    if [ -L "$STAGED_HELPER" ]; then
+        echo "ERROR: Staged helper must not be a symlink: $STAGED_HELPER"
+        exit 1
+    fi
+    if [ ! -f "$STAGED_HELPER" ]; then
+        echo "ERROR: Staged helper not found or not a regular file: $STAGED_HELPER"
+        exit 1
+    fi
+    # Reject world-writable staging locations / non-root ownership (untrusted path)
+    staged_uid="$(stat -c '%u' "$STAGED_HELPER" 2>/dev/null || true)"
+    if [ "$staged_uid" != "0" ]; then
+        echo "ERROR: Staged helper must be owned by root (uid 0): $STAGED_HELPER"
+        exit 1
+    fi
+    staged_mode="$(stat -c '%a' "$STAGED_HELPER" 2>/dev/null || true)"
+    if [ -n "$staged_mode" ] && [ "$((8#$staged_mode & 0022))" -ne 0 ]; then
+        echo "ERROR: Staged helper must not be group/world-writable: $STAGED_HELPER (mode $staged_mode)"
+        exit 1
+    fi
+    cp "$STAGED_HELPER" /usr/local/bin/filerestore.sh
+    echo "  Installed from staged file: $STAGED_HELPER"
+elif command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o /usr/local/bin/filerestore.sh "$SCRIPT_URL"
+    echo "  Downloaded from: $SCRIPT_URL"
 elif command -v wget >/dev/null 2>&1; then
     wget -q -O /usr/local/bin/filerestore.sh "$SCRIPT_URL"
+    echo "  Downloaded from: $SCRIPT_URL"
 else
-    echo "ERROR: Neither curl nor wget found. Please install one and retry."
+    echo "ERROR: No staged helper path provided, and neither curl nor wget found."
     exit 1
 fi
 

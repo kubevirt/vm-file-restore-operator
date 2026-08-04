@@ -34,8 +34,8 @@ import (
 )
 
 const (
-	serviceAccountName     = "vm-file-restore-controller-manager"
-	metricsServiceName     = "vm-file-restore-controller-manager-metrics-service"
+	// metricsRoleBindingName is the base name for the metrics reader binding.
+	// The actual binding is installation-scoped via metricsClusterRoleBindingName.
 	metricsRoleBindingName = "vm-file-restore-metrics-binding"
 
 	snapshotName  = "fedora-file-restore-test-snap"
@@ -44,24 +44,31 @@ const (
 	testFilePath  = "/home/donald/testfile.dat"
 )
 
+func metricsClusterRoleBindingName(operatorNS string) string {
+	return fmt.Sprintf("%s-%s", metricsRoleBindingName, operatorNS)
+}
+
 var _ = Describe("Manager", Ordered, func() {
-	// Operator and namespace are already deployed via 'make cluster-sync'
-	// Just verify they are present
+	var namespace string // operator namespace (configurable for QE)
+
+	// Operator and namespace are already deployed via 'make cluster-sync' or QE setup.sh
 	BeforeAll(func() {
+		namespace = operatorNamespace()
+
 		By("verifying namespace exists")
 		cmd := exec.Command("kubectl", "get", "ns", namespace)
 		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Namespace '%s' not found. Run 'make cluster-sync' first.", namespace)
+		Expect(err).NotTo(HaveOccurred(), "Namespace '%s' not found. Deploy the operator first.", namespace)
 
 		By("verifying CRDs are installed")
 		cmd = exec.Command("kubectl", "get", "crd", "virtualmachinefilerestores.filerestore.kubevirt.io")
 		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "CRDs not found. Run 'make cluster-sync' first.")
+		Expect(err).NotTo(HaveOccurred(), "CRDs not found. Deploy the operator first.")
 
 		By("verifying FileRestoreOperator CRD is installed")
 		cmd = exec.Command("kubectl", "get", "crd", "filerestoreoperators.filerestore.kubevirt.io")
 		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "FileRestoreOperator CRD not found. Run 'make cluster-sync' first.")
+		Expect(err).NotTo(HaveOccurred(), "FileRestoreOperator CRD not found. Deploy the operator first.")
 	})
 
 	// After all tests, clean up test resources but leave operator running
@@ -69,6 +76,13 @@ var _ = Describe("Manager", Ordered, func() {
 		By("cleaning up the curl pod for metrics")
 		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace, "--ignore-not-found=true")
 		_, _ = utils.Run(cmd)
+
+		By("cleaning up metrics ClusterRoleBinding")
+		cmd = exec.Command("kubectl", "delete", "clusterrolebinding",
+			metricsClusterRoleBindingName(namespace), "--ignore-not-found=true")
+		_, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(),
+			"Failed to delete metrics ClusterRoleBinding %s", metricsClusterRoleBindingName(namespace))
 	})
 
 	// AfterEach intentionally left empty - no verbose failure logging needed
@@ -95,7 +109,7 @@ var _ = Describe("Manager", Ordered, func() {
 				podNames := utils.GetNonEmptyLines(podOutput)
 				g.Expect(podNames).To(HaveLen(1), "expected 1 operator pod running")
 				podName := podNames[0]
-				g.Expect(podName).To(ContainSubstring("vm-file-restore-operator"))
+				g.Expect(podName).To(ContainSubstring(operatorDeploymentName()))
 
 				// Validate the pod's status
 				cmd = exec.Command("kubectl", "get",
@@ -123,28 +137,32 @@ var _ = Describe("Manager", Ordered, func() {
 			}, "1m", "5s").Should(Succeed())
 
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
-			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
+			bindingName := metricsClusterRoleBindingName(namespace)
+			// Reconcile subjects for this installation (do not ignore stale "already exists").
+			createYAML, err := utils.Run(exec.Command("kubectl", "create", "clusterrolebinding", bindingName,
 				"--clusterrole=vm-file-restore-metrics-reader",
-				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
-			)
-			_, err := utils.Run(cmd)
-			if err != nil && !strings.Contains(err.Error(), "already exists") {
-				Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
-			}
+				fmt.Sprintf("--serviceaccount=%s:%s", namespace, operatorServiceAccountName()),
+				"--dry-run=client", "-o", "yaml",
+			))
+			Expect(err).NotTo(HaveOccurred(), "Failed to render ClusterRoleBinding")
+			applyCmd := exec.Command("kubectl", "apply", "-f", "-")
+			applyCmd.Stdin = strings.NewReader(createYAML)
+			_, err = utils.Run(applyCmd)
+			Expect(err).NotTo(HaveOccurred(), "Failed to apply ClusterRoleBinding")
 
 			By("validating that the metrics service is available")
-			cmd = exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
+			cmd := exec.Command("kubectl", "get", "service", operatorMetricsServiceName(), "-n", namespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
 
 			By("getting the service account token")
-			token, err := serviceAccountToken(namespace, serviceAccountName)
+			token, err := serviceAccountToken(namespace, operatorServiceAccountName())
 			Expect(err).NotTo(HaveOccurred())
 			Expect(token).NotTo(BeEmpty())
 
 			By("waiting for the metrics endpoint to be ready")
 			verifyMetricsEndpointReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "endpoints", metricsServiceName, "-n", namespace)
+				cmd := exec.Command("kubectl", "get", "endpoints", operatorMetricsServiceName(), "-n", namespace)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("8443"), "Metrics endpoint is not ready")
@@ -187,7 +205,7 @@ var _ = Describe("Manager", Ordered, func() {
 						}],
 						"serviceAccount": "%s"
 					}
-				}`, token, metricsServiceName, namespace, serviceAccountName))
+				}`, token, operatorMetricsServiceName(), namespace, operatorServiceAccountName()))
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
 
@@ -542,27 +560,29 @@ umount /mnt/lvmdata
 
 	Context("FileRestoreOperator", func() {
 		It("should create and reconcile FileRestoreOperator CR", func() {
+			By("initializing Kubernetes clients")
+			_, _, _, crClient, err := initClients()
+			Expect(err).NotTo(HaveOccurred(), "Failed to initialize clients")
+
 			By("creating FileRestoreOperator CR")
-			cmd := exec.Command("kubectl", "apply", "-f",
-				"config/samples/restore_v1alpha1_filerestoreoperator.yaml")
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(),
-				"Failed to create FileRestoreOperator CR")
+			err = createFileRestoreOperatorCR(crClient, namespace, fileRestoreOperatorCRName())
+			Expect(err).NotTo(HaveOccurred(), "Failed to create FileRestoreOperator CR")
 
 			By("verifying FileRestoreOperator CR exists")
 			verifyFileRestoreOperatorExists := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "filerestoreoperator",
-					"vm-file-restore-operator", "-n", namespace)
+					fileRestoreOperatorCRName(), "-n", namespace)
 				_, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred(),
-					"FileRestoreOperator 'vm-file-restore-operator' not found in namespace '%s'", namespace)
+					"FileRestoreOperator '%s' not found in namespace '%s'",
+					fileRestoreOperatorCRName(), namespace)
 			}
 			Eventually(verifyFileRestoreOperatorExists).Should(Succeed())
 
 			By("verifying FileRestoreOperator status phase is updated")
 			verifyFileRestoreOperatorPhase := func(g Gomega) {
 				cmd := exec.Command("kubectl", "get", "filerestoreoperator",
-					"vm-file-restore-operator", "-n", namespace,
+					fileRestoreOperatorCRName(), "-n", namespace,
 					"-o", "jsonpath={.status.phase}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -575,14 +595,14 @@ umount /mnt/lvmdata
 			verifyObservedGeneration := func(g Gomega) {
 				// Get the resource's Generation field
 				cmd := exec.Command("kubectl", "get", "filerestoreoperator",
-					"vm-file-restore-operator", "-n", namespace,
+					fileRestoreOperatorCRName(), "-n", namespace,
 					"-o", "jsonpath={.metadata.generation}")
 				generation, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 
 				// Get the status's ObservedGeneration field
 				cmd = exec.Command("kubectl", "get", "filerestoreoperator",
-					"vm-file-restore-operator", "-n", namespace,
+					fileRestoreOperatorCRName(), "-n", namespace,
 					"-o", "jsonpath={.status.observedGeneration}")
 				observedGeneration, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
@@ -597,7 +617,7 @@ umount /mnt/lvmdata
 			By("verifying that the default FileRestoreOperator CR does not interfere with restore operations")
 			// Verify the FileRestoreOperator is still running and in Deployed state
 			cmd := exec.Command("kubectl", "get", "filerestoreoperator",
-				"vm-file-restore-operator", "-n", namespace,
+				fileRestoreOperatorCRName(), "-n", namespace,
 				"-o", "jsonpath={.status.phase}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
