@@ -27,6 +27,9 @@ $ErrorActionPreference = 'Stop'
 
 # --- Function definitions ---
 
+function Log { param([string]$Message) Write-Host "[filerestore] $Message" }
+function Log-Error { param([string]$Message) [Console]::Error.WriteLine("[filerestore] ERROR: $Message") }
+
 function Show-Usage {
     Write-Host "Usage:"
     Write-Host "  filerestore.bat restore --serial <SERIAL> --mount-path <PATH> [--source-path <PATH>]"
@@ -36,8 +39,29 @@ function Show-Usage {
 # Wrapper functions for native executables (enables Pester mocking)
 function New-Junction { param([string]$Path, [string]$Target) cmd /c mklink /J "$Path" "$Target" | Out-Null }
 function Remove-Junction { param([string]$Path) cmd /c rmdir "$Path" 2>$null }
-function Invoke-Robocopy { param([string[]]$Arguments) & robocopy @Arguments; return $LASTEXITCODE }
+function Invoke-Robocopy {
+    param([string[]]$Arguments)
+    # Capture stdout for summary parsing; filter stderr to avoid terminating errors
+    # under $ErrorActionPreference = 'Stop'.
+    $script:RobocopyOutput = & robocopy @Arguments 2>&1 |
+        Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }
+    $script:RobocopyExitCode = $LASTEXITCODE
+}
 function Read-FileContent { param([string]$Path) return (Get-Content -Path $Path -Raw).Trim() }
+
+# Parse robocopy summary output to extract the "Copied" file count.
+# Robocopy emits a summary table like:
+#                Total    Copied   Skipped  Mismatch    FAILED    Extras
+#    Files :         3         2         1         0         0         0
+function Parse-RobocopyCopiedCount {
+    param([string[]]$Output)
+    foreach ($line in $Output) {
+        if ($line -match '^\s*Files\s*:\s+\d+\s+(\d+)') {
+            return [int]$Matches[1]
+        }
+    }
+    return 0
+}
 
 # Unmount-AndCleanup resolves the junction target to find the disk, removes
 # the junction point, and sets the disk offline.
@@ -66,7 +90,7 @@ function Unmount-AndCleanup {
         Remove-Junction -Path $MountPath
     }
     if (Test-Path $MountPath) {
-        Write-Host "WARNING: Could not remove junction $MountPath"
+        Log "WARNING: Could not remove junction $MountPath"
     }
 
     # Set disk offline after removing the junction
@@ -80,7 +104,7 @@ function Unmount-AndCleanup {
 function Test-SshCommand {
     if (-not $env:SSH_ORIGINAL_COMMAND) { return $null }
     if ($env:SSH_ORIGINAL_COMMAND -notmatch '^"?C:\\Program Files\\filerestore\\filerestore\.bat"?(\s|$)') {
-        Write-Host "ERROR: Only filerestore.bat commands are allowed" -ForegroundColor Red
+        Log-Error "Only filerestore.bat commands are allowed"
         return 'rejected'
     }
     $arguments = $env:SSH_ORIGINAL_COMMAND -replace '^"?C:\\Program Files\\filerestore\\filerestore\.bat"?\s*', ''
@@ -95,7 +119,7 @@ function Invoke-FileRestore {
 
     $Mode = $Arguments[0]
     if ($Mode -notin @('restore', 'cleanup')) {
-        Write-Host "ERROR: Unknown mode: $Mode"
+        Log-Error "Unknown mode: $Mode"
         Show-Usage; return 1
     }
 
@@ -106,39 +130,39 @@ function Invoke-FileRestore {
     while ($i -lt $Arguments.Count) {
         switch ($Arguments[$i]) {
             '--serial'      {
-                if ($i + 1 -ge $Arguments.Count) { Write-Host "ERROR: --serial requires a value"; return 1 }
+                if ($i + 1 -ge $Arguments.Count) { Log-Error "--serial requires a value"; return 1 }
                 $Serial = $Arguments[$i + 1]; $i += 2
             }
             '--mount-path'  {
-                if ($i + 1 -ge $Arguments.Count) { Write-Host "ERROR: --mount-path requires a value"; return 1 }
+                if ($i + 1 -ge $Arguments.Count) { Log-Error "--mount-path requires a value"; return 1 }
                 $MountPath = $Arguments[$i + 1]; $i += 2
             }
             '--source-path' {
-                if ($i + 1 -ge $Arguments.Count) { Write-Host "ERROR: --source-path requires a value"; return 1 }
+                if ($i + 1 -ge $Arguments.Count) { Log-Error "--source-path requires a value"; return 1 }
                 $SourcePath = $Arguments[$i + 1]; $i += 2
             }
             default {
-                Write-Host "ERROR: Unknown argument: $($Arguments[$i])"
+                Log-Error "Unknown argument: $($Arguments[$i])"
                 Show-Usage; return 1
             }
         }
     }
 
     if (-not $MountPath) {
-        Write-Host "ERROR: --mount-path is required"
+        Log-Error "--mount-path is required"
         Show-Usage; return 1
     }
 
     # --- Cleanup mode: unmount and remove mount point ---
     if ($Mode -eq 'cleanup') {
         Unmount-AndCleanup -MountPath $MountPath
-        Write-Host "Cleanup of $MountPath completed"
+        Log "Cleanup of $MountPath completed"
         return 0
     }
 
     # --- Restore mode requires --serial ---
     if (-not $Serial) {
-        Write-Host "ERROR: --serial is required for $Mode"
+        Log-Error "--serial is required for $Mode"
         Show-Usage; return 1
     }
 
@@ -147,7 +171,7 @@ function Invoke-FileRestore {
     $offLineDisks = Get-Disk | Where-Object IsOffline -eq $True
 
     foreach ($disk in $offLineDisks) {
-        Write-Host "Found Offline Disk: $($disk.Number). Clearing readonly and bringing online..."
+        Log "Found Offline Disk: $($disk.Number). Clearing readonly and bringing online..."
 
         # Clear the ReadOnly attribute at the disk level
         Set-Disk -Number $disk.Number -IsReadOnly $false
@@ -159,11 +183,11 @@ function Invoke-FileRestore {
     # --- Find disk by serial number ---
     $disk = Get-Disk | Where-Object { $_.SerialNumber -and $_.SerialNumber.Trim() -eq $Serial }
     if (-not $disk) {
-        Write-Host "ERROR: Disk with serial $Serial not found"
+        Log-Error "Disk with serial $Serial not found"
         return 1
     }
     $diskNumber = $disk.Number
-    Write-Host "Found disk: Disk $diskNumber (Serial: $Serial)"
+    Log "Found disk: Disk $diskNumber (Serial: $Serial)"
 
     # --- Bring disk online ---
     if ($disk.IsOffline) {
@@ -178,7 +202,7 @@ function Invoke-FileRestore {
         Where-Object { $_.Type -notin @('Reserved', 'System', 'Unknown', 'Recovery') -and $_.Size -gt 0 } |
         Select-Object -First 1
     if (-not $partition) {
-        Write-Host "ERROR: No usable partition found on disk $diskNumber"
+        Log-Error "No usable partition found on disk $diskNumber"
         return 1
     }
 
@@ -189,45 +213,46 @@ function Invoke-FileRestore {
         $partition = Get-Partition -DiskNumber $diskNumber -PartitionNumber $partition.PartitionNumber
         $driveLetter = $partition.DriveLetter
         if (-not $driveLetter) {
-            Write-Host "ERROR: Could not assign a drive letter to partition on disk $diskNumber"
+            Log-Error "Could not assign a drive letter to partition on disk $diskNumber"
             return 1
         }
-        Write-Host "Assigned drive letter ${driveLetter}: to partition on disk $diskNumber"
+        Log "Assigned drive letter ${driveLetter}: to partition on disk $diskNumber"
     }
 
     # --- Unlock BitLocker volume (must use the real drive letter, not a junction) ---
     $BitLockerPasswordFile = "C:\Program Files\filerestore\lockfile.txt"
     if (Test-Path $BitLockerPasswordFile) {
         $recoveryPassword = Read-FileContent -Path $BitLockerPasswordFile
-        Write-Host "Unlocking BitLocker volume at ${driveLetter}: ..."
+        Log "Unlocking BitLocker volume at ${driveLetter}: ..."
         Unlock-BitLocker -MountPoint "${driveLetter}:" -RecoveryPassword $recoveryPassword
-        Write-Host "BitLocker volume unlocked"
+        Log "BitLocker volume unlocked"
     }
 
     # Create a junction point to redirect $MountPath to the drive
     if (Test-Path $MountPath) { Remove-Junction -Path $MountPath }
     New-Junction -Path $MountPath -Target "${driveLetter}:\"
     if (-not (Test-Path $MountPath)) {
-        Write-Host "ERROR: Failed to create junction from $MountPath to ${driveLetter}:\"
+        Log-Error "Failed to create junction from $MountPath to ${driveLetter}:\"
         return 1
     }
     Set-Disk -Number $diskNumber -IsReadOnly $true
-    Write-Host "Disk mounted at $MountPath (junction to ${driveLetter}:\)"
+    Log "Disk mounted at $MountPath (junction to ${driveLetter}:\)"
 
     # --- Manual mode: stop here, leave the volume mounted ---
     if (-not $SourcePath) {
-        Write-Host "Volume mounted at $MountPath for manual restore operations"
+        Log "Volume mounted at $MountPath for manual restore operations"
         return 0
     }
 
     # --- Automatic mode: wrap in try/finally to guarantee cleanup ---
+    $script:RobocopyOutput = @()
     $copyFailed = $false
     try {
         # Construct relative backup path
         # For full disk snapshots, strip drive letter and leading backslash
         # "C:\test" -> "test", "C:\foo\bar" -> "foo\bar"
         if ($SourcePath -match '^\\\\') {
-            Write-Host "ERROR: UNC paths are not supported for --source-path"
+            Log-Error "UNC paths are not supported for --source-path"
             return 1
         }
         $RelativePath = $SourcePath -replace '^[A-Za-z]:\\', ''
@@ -236,7 +261,7 @@ function Invoke-FileRestore {
 
         # Validate source path on the backup volume (checked after mount)
         if (-not (Test-Path $BackupPath)) {
-            Write-Host "ERROR: Source path $BackupPath does not exist on the backup volume"
+            Log-Error "Source path $BackupPath does not exist on the backup volume"
             return 1
         }
 
@@ -245,24 +270,33 @@ function Invoke-FileRestore {
             $srcDir = Split-Path $BackupPath -Parent
             $fileName = Split-Path $BackupPath -Leaf
             $destDir = Split-Path $SourcePath -Parent
-            New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-            $rcExit = Invoke-Robocopy -Arguments @("$srcDir", "$destDir", "$fileName", '/COPY:DATS', '/R:1', '/W:1')
+            if (-not (Test-Path $destDir)) {
+                New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+            }
+            Invoke-Robocopy -Arguments @("$srcDir", "$destDir", "$fileName", '/COPY:DATS', '/R:1', '/W:1')
+            $rcExit = $script:RobocopyExitCode
         } else {
-            New-Item -ItemType Directory -Path $SourcePath -Force | Out-Null
-            $rcExit = Invoke-Robocopy -Arguments @("$BackupPath", "$SourcePath", '/E', '/COPY:DATS', '/R:1', '/W:1')
+            if (-not (Test-Path $SourcePath)) {
+                New-Item -ItemType Directory -Path $SourcePath -Force | Out-Null
+            }
+            Invoke-Robocopy -Arguments @("$BackupPath", "$SourcePath", '/E', '/COPY:DATS', '/R:1', '/W:1')
+            $rcExit = $script:RobocopyExitCode
         }
 
         # robocopy exit codes: 0-7 are success (bits indicate copied/extra/mismatched files), 8+ are errors
         if ($rcExit -ge 8) {
-            Write-Host "ERROR: File copy failed with robocopy exit code $rcExit"
+            Log-Error "File copy failed with robocopy exit code $rcExit"
             $copyFailed = $true
+        } else {
+            $fileCount = Parse-RobocopyCopiedCount -Output $script:RobocopyOutput
+            Log "$fileCount files restored"
         }
     } finally {
         Unmount-AndCleanup -MountPath $MountPath -DiskNumber $diskNumber
     }
 
     if ($copyFailed) { return 1 }
-    Write-Host "Automatic restore of $SourcePath completed successfully"
+    Log "Automatic restore of $SourcePath completed successfully"
     return 0
 }
 
