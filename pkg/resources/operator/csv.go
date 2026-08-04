@@ -130,22 +130,22 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 						{
 							Name: "vm-file-restore-operator-controller-manager",
 							Spec: appsv1.DeploymentSpec{
-								Replicas: int32Ptr(1),
+								Replicas: new(int32(1)),
 								Selector: &metav1.LabelSelector{
 									MatchLabels: map[string]string{
-										"control-plane": "controller-manager",
+										"name": "vm-file-restore-operator-controller-manager",
 									},
 								},
 								Template: corev1.PodTemplateSpec{
 									ObjectMeta: metav1.ObjectMeta{
 										Labels: map[string]string{
-											"control-plane": "controller-manager",
+											"name": "vm-file-restore-operator-controller-manager",
 										},
 									},
 									Spec: corev1.PodSpec{
 										ServiceAccountName: "vm-file-restore-operator-controller-manager",
 										SecurityContext: &corev1.PodSecurityContext{
-											RunAsNonRoot: boolPtr(true),
+											RunAsNonRoot: new(true),
 											SeccompProfile: &corev1.SeccompProfile{
 												Type: corev1.SeccompProfileTypeRuntimeDefault,
 											},
@@ -159,7 +159,6 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 												Args: []string{
 													"--leader-elect",
 													"--health-probe-bind-address=:8081",
-													"--webhook-cert-path=/apiserver.local.config/certificates",
 												},
 												Env: []corev1.EnvVar{
 													{
@@ -186,7 +185,7 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 													},
 												},
 												SecurityContext: &corev1.SecurityContext{
-													AllowPrivilegeEscalation: boolPtr(false),
+													AllowPrivilegeEscalation: new(false),
 													Capabilities: &corev1.Capabilities{
 														Drop: []corev1.Capability{"ALL"},
 													},
@@ -196,7 +195,7 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 													ProbeHandler: corev1.ProbeHandler{
 														HTTPGet: &corev1.HTTPGetAction{
 															Path: "/healthz",
-															Port: intstrint(8081),
+															Port: intstr.FromInt32(8081),
 														},
 													},
 													InitialDelaySeconds: 15,
@@ -206,7 +205,7 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 													ProbeHandler: corev1.ProbeHandler{
 														HTTPGet: &corev1.HTTPGetAction{
 															Path: "/readyz",
-															Port: intstrint(8081),
+															Port: intstr.FromInt32(8081),
 														},
 													},
 													InitialDelaySeconds: 5,
@@ -346,16 +345,4 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 	}
 
 	return csv, nil
-}
-
-func boolPtr(b bool) *bool {
-	return &b
-}
-
-func int32Ptr(i int32) *int32 {
-	return &i
-}
-
-func intstrint(i int) intstr.IntOrString {
-	return intstr.FromInt(i)
 }
