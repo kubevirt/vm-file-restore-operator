@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 
+	conditions "github.com/openshift/custom-resource-status/conditions/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	sdkapi "kubevirt.io/controller-lifecycle-operator-sdk/api"
@@ -30,10 +32,21 @@ import (
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 )
 
+const (
+	reasonDeployed    = "Deployed"
+	msgAvailable      = "FileRestoreOperator is available"
+	msgUpgradeable    = "FileRestoreOperator is upgradeable"
+	msgNotProgressing = "FileRestoreOperator is not progressing"
+	msgNotDegraded    = "FileRestoreOperator is not degraded"
+)
+
 // FileRestoreOperatorReconciler reconciles a FileRestoreOperator object
 type FileRestoreOperatorReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// OperatorVersion is the running operator version (typically from OPERATOR_VERSION env var).
+	// Empty means unset; the operator will report "devel" in status.
+	OperatorVersion string
 }
 
 // +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=filerestoreoperators,verbs=get;list;watch
@@ -43,7 +56,6 @@ type FileRestoreOperatorReconciler struct {
 func (r *FileRestoreOperatorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Fetch the FileRestoreOperator instance
 	fileRestoreOperator := &restorev1alpha1.FileRestoreOperator{}
 	err := r.Get(ctx, req.NamespacedName, fileRestoreOperator)
 	if err != nil {
@@ -55,19 +67,74 @@ func (r *FileRestoreOperatorReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, fmt.Errorf("failed to get FileRestoreOperator %s: %w", req.NamespacedName, err)
 	}
 
-	// Update status if phase or generation changed
-	if fileRestoreOperator.Status.Phase != sdkapi.PhaseDeployed ||
-		fileRestoreOperator.Status.ObservedGeneration != fileRestoreOperator.Generation {
-		fileRestoreOperator.Status.Phase = sdkapi.PhaseDeployed
-		fileRestoreOperator.Status.ObservedGeneration = fileRestoreOperator.Generation
+	version := r.operatorVersion()
+	if !fileRestoreOperatorStatusNeedsUpdate(&fileRestoreOperator.Status, fileRestoreOperator.Generation, version) {
+		return ctrl.Result{}, nil
+	}
 
-		if err := r.Status().Update(ctx, fileRestoreOperator); err != nil {
-			logger.Error(err, "Failed to update FileRestoreOperator status")
-			return ctrl.Result{}, fmt.Errorf("failed to update FileRestoreOperator %s status: %w", req.NamespacedName, err)
-		}
+	fileRestoreOperator.Status.Phase = sdkapi.PhaseDeployed
+	fileRestoreOperator.Status.ObservedGeneration = fileRestoreOperator.Generation
+	fileRestoreOperator.Status.OperatorVersion = version
+	fileRestoreOperator.Status.TargetVersion = version
+	fileRestoreOperator.Status.ObservedVersion = version
+
+	// Use NoHeartbeat to avoid bumping LastHeartbeatTime on every write; write
+	// frequency is already controlled by fileRestoreOperatorStatusNeedsUpdate.
+	conditions.SetStatusConditionNoHeartbeat(&fileRestoreOperator.Status.Conditions, conditions.Condition{
+		Type:    conditions.ConditionAvailable,
+		Status:  corev1.ConditionTrue,
+		Reason:  reasonDeployed,
+		Message: msgAvailable,
+	})
+	conditions.SetStatusConditionNoHeartbeat(&fileRestoreOperator.Status.Conditions, conditions.Condition{
+		Type:    conditions.ConditionProgressing,
+		Status:  corev1.ConditionFalse,
+		Reason:  reasonDeployed,
+		Message: msgNotProgressing,
+	})
+	conditions.SetStatusConditionNoHeartbeat(&fileRestoreOperator.Status.Conditions, conditions.Condition{
+		Type:    conditions.ConditionDegraded,
+		Status:  corev1.ConditionFalse,
+		Reason:  reasonDeployed,
+		Message: msgNotDegraded,
+	})
+	conditions.SetStatusConditionNoHeartbeat(&fileRestoreOperator.Status.Conditions, conditions.Condition{
+		Type:    conditions.ConditionUpgradeable,
+		Status:  corev1.ConditionTrue,
+		Reason:  reasonDeployed,
+		Message: msgUpgradeable,
+	})
+
+	if err := r.Status().Update(ctx, fileRestoreOperator); err != nil {
+		logger.Error(err, "Failed to update FileRestoreOperator status")
+		return ctrl.Result{}, fmt.Errorf("failed to update FileRestoreOperator %s status: %w", req.NamespacedName, err)
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *FileRestoreOperatorReconciler) operatorVersion() string {
+	if r.OperatorVersion != "" {
+		return r.OperatorVersion
+	}
+	return "devel"
+}
+
+func fileRestoreOperatorStatusNeedsUpdate(status *restorev1alpha1.FileRestoreOperatorStatus, generation int64, version string) bool {
+	return status.Phase != sdkapi.PhaseDeployed ||
+		status.ObservedGeneration != generation ||
+		status.OperatorVersion != version ||
+		status.TargetVersion != version ||
+		status.ObservedVersion != version ||
+		!isStatusConditionDeployed(status.Conditions, conditions.ConditionAvailable, corev1.ConditionTrue, msgAvailable) ||
+		!isStatusConditionDeployed(status.Conditions, conditions.ConditionProgressing, corev1.ConditionFalse, msgNotProgressing) ||
+		!isStatusConditionDeployed(status.Conditions, conditions.ConditionDegraded, corev1.ConditionFalse, msgNotDegraded) ||
+		!isStatusConditionDeployed(status.Conditions, conditions.ConditionUpgradeable, corev1.ConditionTrue, msgUpgradeable)
+}
+
+func isStatusConditionDeployed(conds []conditions.Condition, condType conditions.ConditionType, status corev1.ConditionStatus, message string) bool {
+	c := conditions.FindStatusCondition(conds, condType)
+	return c != nil && c.Status == status && c.Reason == reasonDeployed && c.Message == message
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -22,6 +22,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	conditions "github.com/openshift/custom-resource-status/conditions/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,9 +33,22 @@ import (
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 )
 
+var _ = Describe("operatorVersion", func() {
+	It("returns the struct field when set", func() {
+		r := &FileRestoreOperatorReconciler{OperatorVersion: "1.2.3"}
+		Expect(r.operatorVersion()).To(Equal("1.2.3"))
+	})
+
+	It("returns 'devel' when struct field is empty", func() {
+		r := &FileRestoreOperatorReconciler{}
+		Expect(r.operatorVersion()).To(Equal("devel"))
+	})
+})
+
 var _ = Describe("FileRestoreOperator Controller", func() {
 	Context("When reconciling a resource", func() {
 		const resourceName = "test-resource"
+		const testVersion = "0.0.1-test"
 
 		ctx := context.Background()
 
@@ -70,11 +84,12 @@ var _ = Describe("FileRestoreOperator Controller", func() {
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
 
-		It("should successfully reconcile the resource", func() {
+		It("should populate phase, version fields, and status conditions", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &FileRestoreOperatorReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				OperatorVersion: testVersion,
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -82,24 +97,46 @@ var _ = Describe("FileRestoreOperator Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Check status is updated
-			Eventually(func() bool {
-				err := k8sClient.Get(ctx, typeNamespacedName, filerestoreoperator)
-				if err != nil {
-					return false
-				}
-				return filerestoreoperator.Status.Phase == sdkapi.PhaseDeployed
-			}, time.Second*10, time.Millisecond*250).Should(BeTrue())
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, filerestoreoperator)).To(Succeed())
+				g.Expect(filerestoreoperator.Status.Phase).To(Equal(sdkapi.PhaseDeployed))
+				g.Expect(filerestoreoperator.Status.ObservedGeneration).To(Equal(filerestoreoperator.Generation))
+				g.Expect(filerestoreoperator.Status.OperatorVersion).To(Equal(testVersion))
+				g.Expect(filerestoreoperator.Status.TargetVersion).To(Equal(testVersion))
+				g.Expect(filerestoreoperator.Status.ObservedVersion).To(Equal(testVersion))
 
-			// Verify ObservedGeneration is set
-			Expect(filerestoreoperator.Status.ObservedGeneration).To(Equal(filerestoreoperator.Generation))
+				avail := conditions.FindStatusCondition(filerestoreoperator.Status.Conditions, conditions.ConditionAvailable)
+				g.Expect(avail).NotTo(BeNil())
+				g.Expect(avail.Status).To(Equal(corev1.ConditionTrue))
+				g.Expect(avail.Reason).To(Equal(reasonDeployed))
+				g.Expect(avail.Message).To(Equal(msgAvailable))
+
+				prog := conditions.FindStatusCondition(filerestoreoperator.Status.Conditions, conditions.ConditionProgressing)
+				g.Expect(prog).NotTo(BeNil())
+				g.Expect(prog.Status).To(Equal(corev1.ConditionFalse))
+				g.Expect(prog.Reason).To(Equal(reasonDeployed))
+				g.Expect(prog.Message).To(Equal(msgNotProgressing))
+
+				deg := conditions.FindStatusCondition(filerestoreoperator.Status.Conditions, conditions.ConditionDegraded)
+				g.Expect(deg).NotTo(BeNil())
+				g.Expect(deg.Status).To(Equal(corev1.ConditionFalse))
+				g.Expect(deg.Reason).To(Equal(reasonDeployed))
+				g.Expect(deg.Message).To(Equal(msgNotDegraded))
+
+				upgradeable := conditions.FindStatusCondition(filerestoreoperator.Status.Conditions, conditions.ConditionUpgradeable)
+				g.Expect(upgradeable).NotTo(BeNil())
+				g.Expect(upgradeable.Status).To(Equal(corev1.ConditionTrue))
+				g.Expect(upgradeable.Reason).To(Equal(reasonDeployed))
+				g.Expect(upgradeable.Message).To(Equal(msgUpgradeable))
+			}, time.Second*10, time.Millisecond*250).Should(Succeed())
 		})
 
 		It("should handle NotFound resource gracefully", func() {
 			By("Reconciling a non-existent resource")
 			controllerReconciler := &FileRestoreOperatorReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				OperatorVersion: testVersion,
 			}
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -108,8 +145,57 @@ var _ = Describe("FileRestoreOperator Controller", func() {
 					Namespace: "default",
 				},
 			})
-			// Should not return error for NotFound
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should report 'devel' version when OperatorVersion is unset", func() {
+			controllerReconciler := &FileRestoreOperatorReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, filerestoreoperator)).To(Succeed())
+				g.Expect(filerestoreoperator.Status.OperatorVersion).To(Equal("devel"))
+				g.Expect(filerestoreoperator.Status.TargetVersion).To(Equal("devel"))
+				g.Expect(filerestoreoperator.Status.ObservedVersion).To(Equal("devel"))
+			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+		})
+
+		It("should update status when operator version changes", func() {
+			By("Reconciling at the initial version")
+			controllerReconciler := &FileRestoreOperatorReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				OperatorVersion: testVersion,
+			}
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				var after1 restorev1alpha1.FileRestoreOperator
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, &after1)).To(Succeed())
+				g.Expect(after1.Status.OperatorVersion).To(Equal(testVersion))
+			}, time.Second*10, time.Millisecond*250).Should(Succeed())
+
+			By("Reconciling after an operator version bump")
+			newVersion := testVersion + "-v2"
+			controllerReconciler2 := &FileRestoreOperatorReconciler{
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				OperatorVersion: newVersion,
+			}
+			_, err = controllerReconciler2.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, typeNamespacedName, filerestoreoperator)).To(Succeed())
+				g.Expect(filerestoreoperator.Status.OperatorVersion).To(Equal(newVersion))
+				g.Expect(filerestoreoperator.Status.TargetVersion).To(Equal(newVersion))
+				g.Expect(filerestoreoperator.Status.ObservedVersion).To(Equal(newVersion))
+			}, time.Second*10, time.Millisecond*250).Should(Succeed())
 		})
 
 		It("should be idempotent when already reconciled", func() {
@@ -122,49 +208,44 @@ var _ = Describe("FileRestoreOperator Controller", func() {
 				Spec: restorev1alpha1.FileRestoreOperatorSpec{},
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			DeferCleanup(func() {
+				err := k8sClient.Delete(ctx, resource)
+				if err != nil && !errors.IsNotFound(err) {
+					Expect(err).NotTo(HaveOccurred())
+				}
+			})
 
 			controllerReconciler := &FileRestoreOperatorReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+				Client:          k8sClient,
+				Scheme:          k8sClient.Scheme(),
+				OperatorVersion: testVersion,
 			}
 
-			// First reconcile
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      "test-idempotency",
-					Namespace: "default",
-				},
-			})
+			nn := types.NamespacedName{Name: "test-idempotency", Namespace: "default"}
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Get current state
 			var firstReconcile restorev1alpha1.FileRestoreOperator
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      "test-idempotency",
-				Namespace: "default",
-			}, &firstReconcile)).To(Succeed())
-
+			Expect(k8sClient.Get(ctx, nn, &firstReconcile)).To(Succeed())
 			firstGeneration := firstReconcile.Status.ObservedGeneration
-			Expect(firstReconcile.Status.Phase).To(Equal(sdkapi.PhaseDeployed))
+			Expect(firstReconcile.Status.ObservedVersion).To(Equal(testVersion))
+			Expect(conditions.IsStatusConditionTrue(firstReconcile.Status.Conditions, conditions.ConditionAvailable)).To(BeTrue())
 
-			// Second reconcile without changes - should be no-op
-			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      "test-idempotency",
-					Namespace: "default",
-				},
-			})
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify status unchanged
 			var secondReconcile restorev1alpha1.FileRestoreOperator
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      "test-idempotency",
-				Namespace: "default",
-			}, &secondReconcile)).To(Succeed())
-
+			Expect(k8sClient.Get(ctx, nn, &secondReconcile)).To(Succeed())
 			Expect(secondReconcile.Status.Phase).To(Equal(sdkapi.PhaseDeployed))
 			Expect(secondReconcile.Status.ObservedGeneration).To(Equal(firstGeneration))
+			Expect(secondReconcile.Status.OperatorVersion).To(Equal(testVersion))
+			Expect(secondReconcile.Status.TargetVersion).To(Equal(testVersion))
+			Expect(secondReconcile.Status.ObservedVersion).To(Equal(testVersion))
+			Expect(conditions.IsStatusConditionTrue(secondReconcile.Status.Conditions, conditions.ConditionAvailable)).To(BeTrue())
+			Expect(conditions.IsStatusConditionFalse(secondReconcile.Status.Conditions, conditions.ConditionProgressing)).To(BeTrue())
+			Expect(conditions.IsStatusConditionFalse(secondReconcile.Status.Conditions, conditions.ConditionDegraded)).To(BeTrue())
+			Expect(conditions.IsStatusConditionTrue(secondReconcile.Status.Conditions, conditions.ConditionUpgradeable)).To(BeTrue())
 		})
 	})
 })

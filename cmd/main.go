@@ -191,7 +191,7 @@ func main() {
 			filepath.Join(metricsCertPath, metricsCertKey),
 		)
 		if err != nil {
-			setupLog.Error(err, "to initialize metrics certificate watcher", "error", err)
+			setupLog.Error(err, "to initialize metrics certificate watcher")
 			os.Exit(1)
 		}
 
@@ -274,9 +274,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	operatorVersion := os.Getenv("OPERATOR_VERSION")
+	if operatorVersion == "" {
+		setupLog.Info("OPERATOR_VERSION not set; status will report version as 'devel'")
+	}
 	if err := (&controller.FileRestoreOperatorReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:          mgr.GetClient(),
+		Scheme:          mgr.GetScheme(),
+		OperatorVersion: operatorVersion,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "FileRestoreOperator")
 		os.Exit(1)
