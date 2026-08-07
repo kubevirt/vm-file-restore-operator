@@ -5,5 +5,3 @@ metadata:
   namespace: file-restore
 spec:
   imagePullPolicy: IfNotPresent
-  infra: {}
-  workloads: {}
