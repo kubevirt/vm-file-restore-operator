@@ -29,14 +29,6 @@ type FileRestoreOperatorSpec struct {
 	// +optional
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
 
-	// Infra configures node placement for operator pod
-	// +optional
-	Infra sdkapi.NodePlacement `json:"infra,omitempty"`
-
-	// Workloads configures resources for restore operations
-	// +optional
-	Workloads sdkapi.NodePlacement `json:"workloads,omitempty"`
-
 	// TLSSecurityProfile configures TLS settings for metrics server
 	// +optional
 	TLSSecurityProfile *TLSSecurityProfile `json:"tlsSecurityProfile,omitempty"`

@@ -33,28 +33,6 @@ func TestFileRestoreOperatorSpec_ImagePullPolicy(t *testing.T) {
 	assert.Equal(t, corev1.PullAlways, spec.ImagePullPolicy)
 }
 
-func TestFileRestoreOperatorSpec_Infra(t *testing.T) {
-	infra := sdkapi.NodePlacement{
-		NodeSelector: map[string]string{"disktype": "ssd"},
-	}
-	spec := &FileRestoreOperatorSpec{
-		Infra: infra,
-	}
-	assert.Equal(t, infra, spec.Infra)
-	assert.Equal(t, "ssd", spec.Infra.NodeSelector["disktype"])
-}
-
-func TestFileRestoreOperatorSpec_Workloads(t *testing.T) {
-	workloads := sdkapi.NodePlacement{
-		NodeSelector: map[string]string{"workload": "batch"},
-	}
-	spec := &FileRestoreOperatorSpec{
-		Workloads: workloads,
-	}
-	assert.Equal(t, workloads, spec.Workloads)
-	assert.Equal(t, "batch", spec.Workloads.NodeSelector["workload"])
-}
-
 func TestFileRestoreOperatorSpec_TLSSecurityProfile(t *testing.T) {
 	tlsProfile := &TLSSecurityProfile{
 		Type: TLSProfileIntermediateType,
