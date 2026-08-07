@@ -24,9 +24,9 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	sdkapi "kubevirt.io/controller-lifecycle-operator-sdk/api"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
@@ -82,16 +82,14 @@ var _ = Describe("FileRestoreOperator Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Check status is updated
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, typeNamespacedName, filerestoreoperator)
 				if err != nil {
 					return false
 				}
-				return filerestoreoperator.Status.Phase == sdkapi.PhaseDeployed
+				return apimeta.IsStatusConditionTrue(filerestoreoperator.Status.Conditions, restorev1alpha1.ConditionAvailable)
 			}, time.Second*10, time.Millisecond*250).Should(BeTrue())
 
-			// Verify ObservedGeneration is set
 			Expect(filerestoreoperator.Status.ObservedGeneration).To(Equal(filerestoreoperator.Generation))
 		})
 
@@ -108,7 +106,6 @@ var _ = Describe("FileRestoreOperator Controller", func() {
 					Namespace: "default",
 				},
 			})
-			// Should not return error for NotFound
 			Expect(err).NotTo(HaveOccurred())
 		})
 
@@ -122,6 +119,9 @@ var _ = Describe("FileRestoreOperator Controller", func() {
 				Spec: restorev1alpha1.FileRestoreOperatorSpec{},
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
+			})
 
 			controllerReconciler := &FileRestoreOperatorReconciler{
 				Client: k8sClient,
@@ -145,7 +145,7 @@ var _ = Describe("FileRestoreOperator Controller", func() {
 			}, &firstReconcile)).To(Succeed())
 
 			firstGeneration := firstReconcile.Status.ObservedGeneration
-			Expect(firstReconcile.Status.Phase).To(Equal(sdkapi.PhaseDeployed))
+			Expect(apimeta.IsStatusConditionTrue(firstReconcile.Status.Conditions, restorev1alpha1.ConditionAvailable)).To(BeTrue())
 
 			// Second reconcile without changes - should be no-op
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -163,7 +163,7 @@ var _ = Describe("FileRestoreOperator Controller", func() {
 				Namespace: "default",
 			}, &secondReconcile)).To(Succeed())
 
-			Expect(secondReconcile.Status.Phase).To(Equal(sdkapi.PhaseDeployed))
+			Expect(apimeta.IsStatusConditionTrue(secondReconcile.Status.Conditions, restorev1alpha1.ConditionAvailable)).To(BeTrue())
 			Expect(secondReconcile.Status.ObservedGeneration).To(Equal(firstGeneration))
 		})
 	})

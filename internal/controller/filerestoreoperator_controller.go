@@ -21,8 +21,9 @@ import (
 	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	sdkapi "kubevirt.io/controller-lifecycle-operator-sdk/api"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -55,10 +56,17 @@ func (r *FileRestoreOperatorReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, fmt.Errorf("failed to get FileRestoreOperator %s: %w", req.NamespacedName, err)
 	}
 
-	// Update status if phase or generation changed
-	if fileRestoreOperator.Status.Phase != sdkapi.PhaseDeployed ||
+	// Update status if Available condition or generation changed
+	availableCondition := apimeta.FindStatusCondition(fileRestoreOperator.Status.Conditions, restorev1alpha1.ConditionAvailable)
+	if availableCondition == nil || availableCondition.Status != metav1.ConditionTrue ||
 		fileRestoreOperator.Status.ObservedGeneration != fileRestoreOperator.Generation {
-		fileRestoreOperator.Status.Phase = sdkapi.PhaseDeployed
+		apimeta.SetStatusCondition(&fileRestoreOperator.Status.Conditions, metav1.Condition{
+			Type:               restorev1alpha1.ConditionAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             "Deployed",
+			Message:            "FileRestoreOperator is deployed and operational",
+			ObservedGeneration: fileRestoreOperator.Generation,
+		})
 		fileRestoreOperator.Status.ObservedGeneration = fileRestoreOperator.Generation
 
 		if err := r.Status().Update(ctx, fileRestoreOperator); err != nil {

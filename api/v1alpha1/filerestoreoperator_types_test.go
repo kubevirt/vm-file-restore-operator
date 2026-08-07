@@ -21,7 +21,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	sdkapi "kubevirt.io/controller-lifecycle-operator-sdk/api"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -71,9 +70,7 @@ func TestFileRestoreOperator_SpecAndStatus(t *testing.T) {
 		ImagePullPolicy: corev1.PullIfNotPresent,
 	}
 	status := FileRestoreOperatorStatus{
-		Status: sdkapi.Status{
-			OperatorVersion: "1.0.0",
-		},
+		OperatorVersion: "1.0.0",
 	}
 	fro := &FileRestoreOperator{
 		Spec:   spec,
@@ -114,24 +111,43 @@ func TestFileRestoreOperator_DeepCopy(t *testing.T) {
 		Spec: FileRestoreOperatorSpec{
 			ImagePullPolicy: corev1.PullAlways,
 		},
-	}
-	copy := original.DeepCopy()
-	assert.Equal(t, original.Name, copy.Name)
-	assert.Equal(t, original.Spec.ImagePullPolicy, copy.Spec.ImagePullPolicy)
-	// Ensure it's a deep copy by modifying the copy
-	copy.Name = "modified"
-	assert.NotEqual(t, original.Name, copy.Name)
-}
-
-func TestFileRestoreOperatorStatus_InlineStatus(t *testing.T) {
-	status := &FileRestoreOperatorStatus{
-		Status: sdkapi.Status{
-			Phase:           sdkapi.PhaseDeploying,
-			OperatorVersion: "0.0.1",
-			TargetVersion:   "0.0.1",
+		Status: FileRestoreOperatorStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:   ConditionAvailable,
+					Status: metav1.ConditionTrue,
+					Reason: "Deployed",
+				},
+			},
 		},
 	}
-	assert.Equal(t, sdkapi.PhaseDeploying, status.Phase)
+	cp := original.DeepCopy()
+	assert.Equal(t, original.Name, cp.Name)
+	assert.Equal(t, original.Spec.ImagePullPolicy, cp.Spec.ImagePullPolicy)
+	cp.Name = "modified"
+	assert.NotEqual(t, original.Name, cp.Name)
+
+	cp.Status.Conditions[0].Status = metav1.ConditionFalse
+	assert.Equal(t, metav1.ConditionTrue, original.Status.Conditions[0].Status)
+}
+
+func TestFileRestoreOperatorStatus_ConditionsAndVersions(t *testing.T) {
+	status := &FileRestoreOperatorStatus{
+		Conditions: []metav1.Condition{
+			{
+				Type:   ConditionAvailable,
+				Status: metav1.ConditionTrue,
+				Reason: "Deployed",
+			},
+		},
+		OperatorVersion: "0.0.1",
+		TargetVersion:   "0.0.1",
+		ObservedVersion: "0.0.1",
+	}
+	assert.Len(t, status.Conditions, 1)
+	assert.Equal(t, ConditionAvailable, status.Conditions[0].Type)
+	assert.Equal(t, metav1.ConditionTrue, status.Conditions[0].Status)
 	assert.Equal(t, "0.0.1", status.OperatorVersion)
 	assert.Equal(t, "0.0.1", status.TargetVersion)
+	assert.Equal(t, "0.0.1", status.ObservedVersion)
 }
