@@ -43,22 +43,24 @@ metadata:
   namespace: file-restore
 spec:
   imagePullPolicy: IfNotPresent
-  infra: {}
-  workloads: {}
   tlsSecurityProfile:
     type: Intermediate
 ```
 
 **Spec Fields:**
 - `imagePullPolicy`: Pull policy for operator images
-- `infra`: Node placement for infrastructure pods (future)
-- `workloads`: Node placement for workload pods (future)
 - `tlsSecurityProfile`: TLS configuration (Old, Intermediate, Modern, Custom)
 
 **Status Fields:**
-- `phase`: Deployment phase (Deploying, Deployed, Error)
+- `conditions`: Standard `metav1.Condition` list (Available, Progressing, Degraded, Upgradeable)
 - `operatorVersion`: Current operator version
+- `targetVersion`: Target operator version
+- `observedVersion`: Last observed operator version
 - `observedGeneration`: Last reconciled generation
+
+**Removed before v5.0 (no replacement):**
+- `spec.infra` / `spec.workloads` (NodePlacement) — the operator creates no pods, so node-placement knobs were never functional.
+- `status.phase` (from `sdkapi.Status`) — replaced by the standard `conditions` list above.
 
 ### VirtualMachineFileRestore CR (Restore Operations)
 
@@ -141,8 +143,9 @@ HCO automatically creates and manages the FileRestoreOperator CR. Users only int
 
 The FileRestoreOperator controller:
 - Watches FileRestoreOperator CRs
-- Updates status to `Deployed` when reconciled
+- Sets standard conditions (Available, Progressing, Degraded, Upgradeable) when reconciled
 - Tracks `observedGeneration` for spec changes
+- Reports operator version via `operatorVersion`, `targetVersion`, `observedVersion`
 - Provides TLS configuration to the metrics server
 
 ### ManagedTLSWatcher
@@ -162,10 +165,11 @@ Binary tool that generates ClusterServiceVersion manifests for OLM:
 
 ## Backward Compatibility
 
-The operator maintains full backward compatibility:
-- Existing VirtualMachineFileRestore workflows unchanged
-- FileRestoreOperator CR is optional for standalone deployments
-- TLS defaults to Intermediate profile if not configured
+The API group and version (`filerestore.kubevirt.io/v1alpha1`) are unchanged. The following breaking changes were made before the first release (v5.0):
+- `spec.infra` and `spec.workloads` were removed (never functional)
+- `status.phase` was replaced by standard `metav1.Condition` entries
+
+Existing VirtualMachineFileRestore workflows are unaffected. The FileRestoreOperator CR is optional for standalone deployments, and TLS defaults to Intermediate if not configured.
 
 ## See Also
 

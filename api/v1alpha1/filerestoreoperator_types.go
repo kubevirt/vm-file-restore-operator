@@ -19,7 +19,13 @@ package v1alpha1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	sdkapi "kubevirt.io/controller-lifecycle-operator-sdk/api"
+)
+
+const (
+	ConditionAvailable   = "Available"
+	ConditionProgressing = "Progressing"
+	ConditionDegraded    = "Degraded"
+	ConditionUpgradeable = "Upgradeable"
 )
 
 // FileRestoreOperatorSpec defines the desired state of FileRestoreOperator
@@ -29,14 +35,6 @@ type FileRestoreOperatorSpec struct {
 	// +optional
 	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
 
-	// Infra configures node placement for operator pod
-	// +optional
-	Infra sdkapi.NodePlacement `json:"infra,omitempty"`
-
-	// Workloads configures resources for restore operations
-	// +optional
-	Workloads sdkapi.NodePlacement `json:"workloads,omitempty"`
-
 	// TLSSecurityProfile configures TLS settings for metrics server
 	// +optional
 	TLSSecurityProfile *TLSSecurityProfile `json:"tlsSecurityProfile,omitempty"`
@@ -44,8 +42,23 @@ type FileRestoreOperatorSpec struct {
 
 // FileRestoreOperatorStatus defines the observed state of FileRestoreOperator
 type FileRestoreOperatorStatus struct {
-	// Embed SDK status which includes Phase, Conditions, OperatorVersion, etc.
-	sdkapi.Status `json:",inline"`
+	// Conditions represent the latest available observations of the operator's state
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// OperatorVersion is the version of the operator
+	// +optional
+	OperatorVersion string `json:"operatorVersion,omitempty"`
+
+	// TargetVersion is the target version of the operator
+	// +optional
+	TargetVersion string `json:"targetVersion,omitempty"`
+
+	// ObservedVersion is the observed version of the operator
+	// +optional
+	ObservedVersion string `json:"observedVersion,omitempty"`
 
 	// ObservedGeneration reflects the generation most recently observed by the controller
 	// +optional
