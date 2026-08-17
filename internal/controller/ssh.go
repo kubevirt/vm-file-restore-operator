@@ -122,6 +122,7 @@ func (c *SSHClient) Close() error {
 
 // BuildSSHCommand constructs the restore command to execute on the guest VM.
 // If sourcePath is empty, manual mode is assumed (no automatic restore).
+// Returns an error if mountPath or sourcePath resolve to a root or disk path.
 // Panics if volumeName or mountPath are empty (caller error).
 func BuildSSHCommand(osType, volumeName, mountPath, sourcePath string) (string, error) {
 	if volumeName == "" {
@@ -178,11 +179,19 @@ func validateRestorePath(osType, fieldName, path string) error {
 
 func isRootRestorePath(osType, path string) bool {
 	if osType == osTypeWindows {
-		normalized := pathpkg.Clean(strings.ReplaceAll(path, `\`, `/`))
+		normalized := strings.ReplaceAll(path, `\`, `/`)
+		if pathpkg.Clean(normalized) == "/" {
+			return true
+		}
+		if len(normalized) < 2 || normalized[1] != ':' {
+			return false
+		}
+
+		normalized = pathpkg.Clean(normalized[2:])
 		if normalized == "/" {
 			return true
 		}
-		return len(normalized) == 2 && normalized[1] == ':'
+		return normalized == "."
 	}
 
 	return pathpkg.Clean(path) == "/"

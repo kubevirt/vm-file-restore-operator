@@ -128,6 +128,20 @@ func TestBuildSSHCommand_RejectsRootPaths(t *testing.T) {
 			wantErr:    `sourcePath cannot be a root or disk path: "C:\\."`,
 		},
 		{
+			name:       "rejects windows source parent drive root backslash",
+			osType:     "windows",
+			mountPath:  `C:\backup`,
+			sourcePath: `C:\..`,
+			wantErr:    `sourcePath cannot be a root or disk path: "C:\\.."`,
+		},
+		{
+			name:       "rejects windows source parent drive root slash",
+			osType:     "windows",
+			mountPath:  `C:\backup`,
+			sourcePath: `C:/..`,
+			wantErr:    `sourcePath cannot be a root or disk path: "C:/.."`,
+		},
+		{
 			name:       "rejects windows source current drive root backslash",
 			osType:     "windows",
 			mountPath:  `C:\backup`,
@@ -168,6 +182,20 @@ func TestBuildSSHCommand_RejectsRootPaths(t *testing.T) {
 			mountPath:  `D:\.`,
 			sourcePath: `D:\Users\data`,
 			wantErr:    `mountPath cannot be a root or disk path: "D:\\."`,
+		},
+		{
+			name:       "rejects windows mount parent drive root backslash",
+			osType:     "windows",
+			mountPath:  `D:\..`,
+			sourcePath: `D:\Users\data`,
+			wantErr:    `mountPath cannot be a root or disk path: "D:\\.."`,
+		},
+		{
+			name:       "rejects windows mount parent drive root slash",
+			osType:     "windows",
+			mountPath:  `D:/..`,
+			sourcePath: `D:\Users\data`,
+			wantErr:    `mountPath cannot be a root or disk path: "D:/.."`,
 		},
 		{
 			name:       "rejects windows mount current drive root backslash",
