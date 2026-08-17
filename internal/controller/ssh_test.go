@@ -4,42 +4,111 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuildSSHCommand_LinuxAutomatic(t *testing.T) {
-	command := BuildSSHCommand("linux", "test-restore", "/backup", "/home/user/data")
+	command, err := BuildSSHCommand("linux", "test-restore", "/backup", "/home/user/data")
+	require.NoError(t, err)
 	expected := "/usr/local/bin/filerestore.sh restore --serial test-restore --mount-path /backup --source-path /home/user/data"
 	assert.Equal(t, expected, command)
 }
 
 func TestBuildSSHCommand_LinuxManual(t *testing.T) {
-	command := BuildSSHCommand("linux", "test-restore", "/backup", "")
+	command, err := BuildSSHCommand("linux", "test-restore", "/backup", "")
+	require.NoError(t, err)
 	expected := "/usr/local/bin/filerestore.sh restore --serial test-restore --mount-path /backup"
 	assert.Equal(t, expected, command)
 }
 
 func TestBuildSSHCommand_WindowsAutomatic(t *testing.T) {
-	command := BuildSSHCommand("windows", "test-restore", "C:\\backup", "C:\\Users\\data")
+	command, err := BuildSSHCommand("windows", "test-restore", "C:\\backup", "C:\\Users\\data")
+	require.NoError(t, err)
 	expected := `"C:\Program Files\filerestore\filerestore.bat" restore --serial test-restore --mount-path "C:\backup" --source-path "C:\Users\data"`
 	assert.Equal(t, expected, command)
 }
 
 func TestBuildSSHCommand_WindowsTrailingBackslash(t *testing.T) {
-	command := BuildSSHCommand("windows", "test-restore", "C:\\backup", "C:\\Program Files\\")
+	command, err := BuildSSHCommand("windows", "test-restore", "C:\\backup", "C:\\Program Files\\")
+	require.NoError(t, err)
 	expected := `"C:\Program Files\filerestore\filerestore.bat" restore --serial test-restore --mount-path "C:\backup" --source-path "C:\Program Files"`
 	assert.Equal(t, expected, command)
 }
 
 func TestBuildSSHCommand_LinuxTrailingSlash(t *testing.T) {
-	command := BuildSSHCommand("linux", "test-restore", "/backup", "/home/user/data/")
+	command, err := BuildSSHCommand("linux", "test-restore", "/backup", "/home/user/data/")
+	require.NoError(t, err)
 	expected := "/usr/local/bin/filerestore.sh restore --serial test-restore --mount-path /backup --source-path /home/user/data"
 	assert.Equal(t, expected, command)
 }
 
 func TestBuildSSHCommand_WindowsManual(t *testing.T) {
-	command := BuildSSHCommand("windows", "test-restore", "C:\\backup", "")
+	command, err := BuildSSHCommand("windows", "test-restore", "C:\\backup", "")
+	require.NoError(t, err)
 	expected := `"C:\Program Files\filerestore\filerestore.bat" restore --serial test-restore --mount-path "C:\backup"`
 	assert.Equal(t, expected, command)
+}
+
+func TestBuildSSHCommand_RejectsRootPaths(t *testing.T) {
+	tests := []struct {
+		name       string
+		osType     string
+		mountPath  string
+		sourcePath string
+		wantErr    string
+	}{
+		{
+			name:       "rejects linux source root",
+			osType:     "linux",
+			mountPath:  "/backup",
+			sourcePath: "/",
+			wantErr:    `sourcePath cannot be a root or disk path: "/"`,
+		},
+		{
+			name:       "rejects linux mount root",
+			osType:     "linux",
+			mountPath:  "/",
+			sourcePath: "/home/user/data",
+			wantErr:    `mountPath cannot be a root or disk path: "/"`,
+		},
+		{
+			name:       "rejects windows source drive root backslash",
+			osType:     "windows",
+			mountPath:  `C:\backup`,
+			sourcePath: `C:\`,
+			wantErr:    `sourcePath cannot be a root or disk path: "C:\\"`,
+		},
+		{
+			name:       "rejects windows source drive root slash",
+			osType:     "windows",
+			mountPath:  `C:\backup`,
+			sourcePath: `C:/`,
+			wantErr:    `sourcePath cannot be a root or disk path: "C:/"`,
+		},
+		{
+			name:       "rejects windows source bare drive",
+			osType:     "windows",
+			mountPath:  `C:\backup`,
+			sourcePath: `c:`,
+			wantErr:    `sourcePath cannot be a root or disk path: "c:"`,
+		},
+		{
+			name:       "rejects windows mount drive root",
+			osType:     "windows",
+			mountPath:  `D:\`,
+			sourcePath: `D:\Users\data`,
+			wantErr:    `mountPath cannot be a root or disk path: "D:\\"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command, err := BuildSSHCommand(tt.osType, "test-restore", tt.mountPath, tt.sourcePath)
+			require.Error(t, err)
+			assert.Empty(t, command)
+			assert.EqualError(t, err, tt.wantErr)
+		})
+	}
 }
 
 func TestBuildCleanupCommand_Linux(t *testing.T) {
