@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	pathpkg "path"
 	"strings"
 	"time"
 
@@ -177,18 +178,14 @@ func validateRestorePath(osType, fieldName, path string) error {
 
 func isRootRestorePath(osType, path string) bool {
 	if osType == osTypeWindows {
-		if len(path) < 2 || path[1] != ':' {
-			return false
-		}
-
-		if len(path) == 2 {
+		normalized := pathpkg.Clean(strings.ReplaceAll(path, `\`, `/`))
+		if normalized == "/" {
 			return true
 		}
-
-		return strings.Trim(path[2:], `/\`) == ""
+		return len(normalized) == 2 && normalized[1] == ':'
 	}
 
-	return strings.Trim(path, `/`) == ""
+	return pathpkg.Clean(path) == "/"
 }
 
 // BuildCleanupCommand constructs the cleanup command to execute on the guest VM.
