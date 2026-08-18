@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	pathpkg "path"
 	"strings"
 	"time"
 
@@ -121,13 +122,22 @@ func (c *SSHClient) Close() error {
 
 // BuildSSHCommand constructs the restore command to execute on the guest VM.
 // If sourcePath is empty, manual mode is assumed (no automatic restore).
+// Returns an error if mountPath or sourcePath resolve to a root or disk path.
 // Panics if volumeName or mountPath are empty (caller error).
-func BuildSSHCommand(osType, volumeName, mountPath, sourcePath string) string {
+func BuildSSHCommand(osType, volumeName, mountPath, sourcePath string) (string, error) {
 	if volumeName == "" {
 		panic("BuildSSHCommand called with empty volumeName")
 	}
 	if mountPath == "" {
 		panic("BuildSSHCommand called with empty mountPath")
+	}
+	if err := validateRestorePath(osType, "mountPath", mountPath); err != nil {
+		return "", err
+	}
+	if sourcePath != "" {
+		if err := validateRestorePath(osType, "sourcePath", sourcePath); err != nil {
+			return "", err
+		}
 	}
 
 	scriptPath := GetHelperScriptPath(osType)
@@ -157,7 +167,34 @@ func BuildSSHCommand(osType, volumeName, mountPath, sourcePath string) string {
 		}
 	}
 
-	return cmd
+	return cmd, nil
+}
+
+func validateRestorePath(osType, fieldName, path string) error {
+	if isRootRestorePath(osType, path) {
+		return fmt.Errorf("%s cannot be a root or disk path: %q", fieldName, path)
+	}
+	return nil
+}
+
+func isRootRestorePath(osType, path string) bool {
+	if osType == osTypeWindows {
+		normalized := strings.ReplaceAll(path, `\`, `/`)
+		if pathpkg.Clean(normalized) == "/" {
+			return true
+		}
+		if len(normalized) < 2 || normalized[1] != ':' {
+			return false
+		}
+
+		normalized = pathpkg.Clean(normalized[2:])
+		if normalized == "/" {
+			return true
+		}
+		return normalized == "."
+	}
+
+	return pathpkg.Clean(path) == "/"
 }
 
 // BuildCleanupCommand constructs the cleanup command to execute on the guest VM.
