@@ -571,7 +571,10 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 	// Build restore command
 	osType := DetectGuestOS(vmi)
 	volumeName := GetVolumeName(vmfr.Name)
-	command := BuildSSHCommand(osType, volumeName, vmfr.Status.MountPath, vmfr.Spec.SourcePath)
+	command, err := BuildSSHCommand(osType, volumeName, vmfr.Status.MountPath, vmfr.Spec.SourcePath)
+	if err != nil {
+		return failRestore(ctx, r, vmfr, err, fmt.Sprintf("invalid path in restore request: %s", err.Error()))
+	}
 
 	logger.Info("Executing restore command", "command", command)
 
