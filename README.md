@@ -351,78 +351,127 @@ is manually re-applied afterwards.
 
 ### Unit Tests
 
-Run unit tests:
+Runs Go unit tests and containerized guest-helper script tests (requires docker or podman):
+
 ```bash
 make test
 ```
 
 ### E2E Tests
 
-End-to-end tests run against a kubevirtci cluster with the operator deployed.
+E2e tests exercise the operator against a real KubeVirt cluster created by
+[kubevirtci](https://github.com/kubevirt/kubevirtci). They require a running
+cluster, a deployed operator, and `virtctl` on `PATH`.
 
-**Setup kubevirtci cluster:**
+#### Make targets
+
+| Target | What it does |
+|--------|----------------|
+| `make cluster-functest` | Full workflow: tear down any existing cluster, bring up kubevirtci, build and deploy the operator, run e2e tests (`hack/test-e2e.sh`). |
+| `make test-e2e` | Run the e2e test suite only. Cluster must already be up and the operator deployed. |
+| `make cluster-up` | Create the kubevirtci cluster (KubeVirt, CDI, storage). |
+| `make cluster-sync` | Build the operator image, push it to the kubevirtci registry, apply manifests, restart the deployment. |
+| `make cluster-down` | Tear down the kubevirtci cluster. |
+| `make cluster-image-env` | Print `export PUSH_IMG=...` and `export IMG=...` for the current kubevirtci registry. |
+
+Run `make help` for the full target list.
+
+#### Operator image during e2e
+
+E2e does **not** deploy a pre-built image from Quay. `cluster-sync` builds the
+operator from the current working tree, tags it with the current git commit
+(`dev-<short-sha>` by default), and uses kubevirtci's embedded registry:
+
+| Variable | Used for | Typical value |
+|----------|----------|---------------|
+| `PUSH_IMG` | `docker build` / `docker push` from the host | `localhost:<port>/kubevirt/vm-file-restore-operator:dev-<sha>` |
+| `IMG` | Image reference written into `dist/install.yaml` | `registry:5000/kubevirt/vm-file-restore-operator:dev-<sha>` |
+
+The host and in-cluster URLs differ because kubevirtci exposes the registry on
+`localhost:<port>` outside the cluster and as `registry:5000` inside it. Values
+are read from `kubevirtci/_ci-configs/<provider>/config-provider-*.sh` after
+`cluster-up`; see `hack/kubevirtci-image-env.sh`.
+
+Set both explicitly to use an external registry instead:
 
 ```bash
-# Bring up a local Kubernetes cluster with KubeVirt and CDI
-# This automatically deploys pinned versions of KubeVirt and kubevirtci for reproducibility
-make cluster-up
-
-# Configure kubectl to use the cluster
-eval "$(make cluster-kubeconfig)"
-
-# Verify cluster is ready
-kubectl get nodes
-```
-
-**Customize cluster versions (optional):**
-
-```bash
-# Override KubeVirt version
-KUBEVIRT_VERSION=v1.9.0 make cluster-up
-
-# Override kubevirtci tag
-KUBEVIRTCI_TAG=<tag> make cluster-up
-
-# Override Kubernetes version
-KUBEVIRT_PROVIDER=k8s-1.37 make cluster-up
-
-# Override number of nodes
-KUBEVIRT_NUM_NODES=3 make cluster-up
-
-# Override wait timeout for KubeVirt/CDI readiness (default: 10m)
-KUBEVIRT_WAIT_TIMEOUT=15m make cluster-up
-```
-
-**Deploy operator to cluster:**
-```bash
+PUSH_IMG=registry.example.com/kubevirt/vm-file-restore-operator:example-tag \
+IMG=registry:5000/kubevirt/vm-file-restore-operator:example-tag \
 make cluster-sync
 ```
 
-To use a custom image:
+#### Run the full suite locally
+
 ```bash
-IMG=<your-registry>/vm-file-restore-operator:tag make cluster-sync
+make cluster-functest
 ```
 
-**Run tests:**
+Equivalent to:
+
 ```bash
-# Make sure virtctl is in PATH
+./hack/test-e2e.sh
+```
+
+Requires `docker`, `kubectl`, `virtctl`, and sufficient resources for a
+2-node cluster with rook-ceph storage (defaults match the prow job:
+`KUBEVIRT_NUM_NODES=2`, `KUBEVIRT_STORAGE=rook-ceph-default`).
+
+#### Run step-by-step (iteration)
+
+Use this when the cluster is already up and you want to redeploy or re-run tests
+without recreating the cluster.
+
+```bash
+make cluster-up
+
+kubeconfig="$(source hack/config.sh && ./kubevirtci/cluster-up/kubeconfig.sh)"
+export KUBECONFIG="${kubeconfig}"
+kubectl get nodes
+
+make cluster-sync
 make test-e2e
 ```
 
-**Tear down cluster when done:**
+Rebuild the manifest and restart the deployment without rebuilding the image
+(useful when only `test/e2e/` changed):
+
+```bash
+SKIP_IMAGE_BUILD=true make cluster-sync
+make test-e2e
+```
+
+Run a subset of tests:
+
+```bash
+E2E_TEST_CMD='go test ./test/e2e/ -v -ginkgo.v -timeout=90m -ginkgo.focus="manual restore"' make test-e2e
+```
+
+Default test timeout is `90m` (`E2E_TIMEOUT`).
+
+#### CI
+
+Prow job `pull-vm-file-restore-operator-e2e` runs `./hack/test-e2e.sh` on bare-metal
+workers. The job is optional and not run on every PR; trigger it with:
+
+```text
+/test pull-vm-file-restore-operator-e2e
+```
+
+#### Cluster options
+
+```bash
+KUBEVIRT_VERSION=v1.9.0 make cluster-up          # KubeVirt release (default: v1.8.4)
+KUBEVIRTCI_TAG=<tag> make cluster-up             # kubevirtci gocli version
+KUBEVIRT_PROVIDER=k8s-1.37 make cluster-up       # Kubernetes version (default: k8s-1.36)
+KUBEVIRT_NUM_NODES=3 make cluster-up             # cluster size (default: 2)
+KUBEVIRT_WAIT_TIMEOUT=15m make cluster-up        # KubeVirt/CDI readiness (default: 10m)
+```
+
+#### Tear down
+
 ```bash
 make cluster-down
 ```
-
-**File Restore Test:**
-The file restore e2e test validates the complete workflow:
-- Creates a Fedora VM (10Gi boot disk from quay.io/containerdisks/fedora:44)
-- Installs guest helper via SSH with operator's public key
-- Creates test user and generates 1GB test file
-- Creates a VolumeSnapshot of the boot disk
-- Deletes the file to verify restore actually works
-- Creates VirtualMachineFileRestore CR
-- Polls for restore completion and verifies file size, ownership, and permissions
 
 ## Development
 

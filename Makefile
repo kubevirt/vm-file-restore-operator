@@ -136,7 +136,7 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet setup-envtest ## Run tests.
+test: manifests generate fmt vet setup-envtest test-scripts ## Run unit and guest-helper tests (requires a container engine).
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e | grep -v /cmd | grep -v /api/v1alpha1 | grep -v /test/utils) -coverprofile cover.out
 
 # E2E tests use kubevirtci for ephemeral KubeVirt clusters
@@ -155,9 +155,17 @@ cluster-kubeconfig: ## Print kubeconfig export command for kubevirtci cluster
 	@test -d ./kubevirtci || { echo "Error: kubevirtci not found. Run 'make cluster-up' first." >&2; exit 1; }
 	@echo "export KUBECONFIG=$$(source ./hack/config.sh && ./kubevirtci/cluster-up/kubeconfig.sh)"
 
+.PHONY: cluster-image-env
+cluster-image-env: ## Print PUSH_IMG/IMG exports from kubevirtci registry ports
+	@bash -c 'source ./hack/kubevirtci-image-env.sh && echo "export PUSH_IMG=$$PUSH_IMG" && echo "export IMG=$$IMG"'
+
 .PHONY: cluster-sync
 cluster-sync: ## Deploy the operator to kubevirtci cluster
 	./cluster/sync.sh
+
+.PHONY: cluster-functest
+cluster-functest: ## Bring up kubevirtci, deploy operator, and run e2e tests
+	./hack/test-e2e.sh
 
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet ## Run e2e tests (requires kubevirtci cluster running)
@@ -177,7 +185,7 @@ CONTAINER_ENGINE ?= $(CONTAINER_TOOL)
 # https://learn.microsoft.com/en-us/powershell/scripting/install/powershell-in-docker
 PWSH_IMAGE ?= mcr.microsoft.com/dotnet/sdk:9.0
 PESTER_VERSION ?= 5.7.1
-BATS_IMAGE ?= bats/bats:1.13.0
+BATS_IMAGE ?= docker.io/bats/bats:1.13.0
 # :Z relabels for SELinux; use empty value on Docker Desktop (macOS/Windows)
 VOLUME_OPTS ?= :Z
 

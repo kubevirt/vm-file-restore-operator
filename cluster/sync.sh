@@ -9,19 +9,35 @@ if [ -z "${KUBECONFIG}" ]; then
     exit 1
 fi
 
-: "${IMG:=quay.io/kubevirt/vm-file-restore-operator:latest}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -z "${IMG:-}" ] && [ -z "${PUSH_IMG:-}" ]; then
+    # shellcheck source=../hack/kubevirtci-image-env.sh
+    source "${repo_root}/hack/kubevirtci-image-env.sh"
+elif [ -z "${PUSH_IMG:-}" ]; then
+    export PUSH_IMG="${IMG}"
+elif [ -z "${IMG:-}" ]; then
+    export IMG="${PUSH_IMG}"
+fi
 
 echo "Deploying operator with image: ${IMG}"
+if [ "${PUSH_IMG}" != "${IMG}" ]; then
+    echo "Pushing image as: ${PUSH_IMG}"
+fi
 
-# Build, push, and generate installer manifest
-echo "Building image..."
-make docker-build docker-push build-installer IMG="${IMG}"
+if [ "${SKIP_IMAGE_BUILD:-}" = "true" ]; then
+    echo "Skipping image build (SKIP_IMAGE_BUILD=true)"
+    make build-installer IMG="${IMG}"
+else
+    echo "Building and pushing operator image..."
+    make docker-build docker-push IMG="${PUSH_IMG}"
+    make build-installer IMG="${IMG}"
+fi
 
-# Deploy using the generated installer manifest
 echo "Deploying to cluster..."
 kubectl apply -f dist/install.yaml
 
-# Restart deployment to pick up new image (imagePullPolicy: IfNotPresent requires pod recreation)
+# Restart deployment so the new image reference is picked up. With a unique tag per
+# commit, the cluster pulls the freshly pushed image even with imagePullPolicy: IfNotPresent.
 echo ""
 echo "Restarting deployment to pull new image..."
 kubectl rollout restart deployment/vm-file-restore-operator -n file-restore
