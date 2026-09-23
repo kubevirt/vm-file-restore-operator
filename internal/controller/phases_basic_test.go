@@ -1,11 +1,19 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	v1 "kubevirt.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 )
@@ -69,6 +77,223 @@ func TestParseRestoredFileCount(t *testing.T) {
 			assert.Equal(t, tt.expected, ParseRestoredFileCount(tt.stdout))
 		})
 	}
+}
+
+func TestPreserveRestoredFilesCount(t *testing.T) {
+	int32Ptr := func(value int32) *int32 { return &value }
+	scheme := runtime.NewScheme()
+	require.NoError(t, restorev1alpha1.AddToScheme(scheme))
+	ctx := context.Background()
+
+	t.Run("count already set", func(t *testing.T) {
+		vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "restore-1", Namespace: "test-ns"},
+			Status: restorev1alpha1.VirtualMachineFileRestoreStatus{
+				RestoredFilesCount: int32Ptr(5),
+			},
+		}
+		latest := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "restore-1", Namespace: "test-ns"},
+			Status: restorev1alpha1.VirtualMachineFileRestoreStatus{
+				RestoredFilesCount: int32Ptr(3),
+			},
+		}
+		reconciler := &VirtualMachineFileRestoreReconciler{
+			Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(latest).Build(),
+			APIReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(latest).Build(),
+		}
+		err := preserveRestoredFilesCount(ctx, reconciler, vmfr)
+		require.NoError(t, err)
+		assert.Equal(t, int32(5), *vmfr.Status.RestoredFilesCount)
+	})
+
+	t.Run("copies count from API", func(t *testing.T) {
+		vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "restore-2", Namespace: "test-ns"},
+		}
+		latest := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "restore-2", Namespace: "test-ns"},
+			Status: restorev1alpha1.VirtualMachineFileRestoreStatus{
+				RestoredFilesCount: int32Ptr(4),
+			},
+		}
+		reconciler := &VirtualMachineFileRestoreReconciler{
+			Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(latest).Build(),
+			APIReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(latest).Build(),
+		}
+		err := preserveRestoredFilesCount(ctx, reconciler, vmfr)
+		require.NoError(t, err)
+		require.NotNil(t, vmfr.Status.RestoredFilesCount)
+		assert.Equal(t, int32(4), *vmfr.Status.RestoredFilesCount)
+	})
+
+	t.Run("API miss leaves count nil", func(t *testing.T) {
+		vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "missing", Namespace: "test-ns"},
+		}
+		reconciler := &VirtualMachineFileRestoreReconciler{
+			Client:    fake.NewClientBuilder().WithScheme(scheme).Build(),
+			APIReader: fake.NewClientBuilder().WithScheme(scheme).Build(),
+		}
+		err := preserveRestoredFilesCount(ctx, reconciler, vmfr)
+		require.NoError(t, err)
+		assert.Nil(t, vmfr.Status.RestoredFilesCount)
+	})
+
+	t.Run("falls back to cached client", func(t *testing.T) {
+		vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "restore-3", Namespace: "test-ns"},
+		}
+		latest := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "restore-3", Namespace: "test-ns"},
+			Status: restorev1alpha1.VirtualMachineFileRestoreStatus{
+				RestoredFilesCount: int32Ptr(2),
+			},
+		}
+		cachedClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(latest).Build()
+		reconciler := &VirtualMachineFileRestoreReconciler{Client: cachedClient}
+		err := preserveRestoredFilesCount(ctx, reconciler, vmfr)
+		require.NoError(t, err)
+		require.NotNil(t, vmfr.Status.RestoredFilesCount)
+		assert.Equal(t, int32(2), *vmfr.Status.RestoredFilesCount)
+	})
+
+	t.Run("API reader failure returns transient error", func(t *testing.T) {
+		vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "restore-api-fail", Namespace: "test-ns"},
+		}
+		boom := errors.New("apiserver unavailable")
+		failingReader := fake.NewClientBuilder().WithScheme(scheme).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+					if _, ok := obj.(*restorev1alpha1.VirtualMachineFileRestore); ok {
+						return boom
+					}
+					return nil
+				},
+			}).Build()
+		reconciler := &VirtualMachineFileRestoreReconciler{
+			Client:    fake.NewClientBuilder().WithScheme(scheme).Build(),
+			APIReader: failingReader,
+		}
+		err := preserveRestoredFilesCount(ctx, reconciler, vmfr)
+		require.Error(t, err)
+		assert.True(t, IsTransient(err))
+		assert.Contains(t, err.Error(), "preserveRestoredFilesCount")
+		assert.Nil(t, vmfr.Status.RestoredFilesCount)
+	})
+}
+
+func TestSkipRestoringIfPhaseAdvanced(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, restorev1alpha1.AddToScheme(scheme))
+	ctx := context.Background()
+
+	t.Run("phase already advanced", func(t *testing.T) {
+		vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "restore-skip", Namespace: "test-ns"},
+			Status: restorev1alpha1.VirtualMachineFileRestoreStatus{
+				Phase: restorev1alpha1.RestorePhaseRestoring,
+			},
+		}
+		latest := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "restore-skip", Namespace: "test-ns"},
+			Status: restorev1alpha1.VirtualMachineFileRestoreStatus{
+				Phase: restorev1alpha1.RestorePhaseCleanup,
+			},
+		}
+		reconciler := &VirtualMachineFileRestoreReconciler{
+			Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(vmfr).Build(),
+			APIReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(latest).Build(),
+		}
+
+		skip, err := skipRestoringIfPhaseAdvanced(ctx, reconciler, vmfr)
+		require.NoError(t, err)
+		assert.True(t, skip)
+	})
+
+	t.Run("persisted file count completes cleanup without SSH", func(t *testing.T) {
+		int32Ptr := func(value int32) *int32 { return &value }
+		latest := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "restore-count", Namespace: "test-ns"},
+			Status: restorev1alpha1.VirtualMachineFileRestoreStatus{
+				Phase:              restorev1alpha1.RestorePhaseRestoring,
+				RestoredFilesCount: int32Ptr(3),
+			},
+		}
+		vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "restore-count", Namespace: "test-ns"},
+			Status: restorev1alpha1.VirtualMachineFileRestoreStatus{
+				Phase: restorev1alpha1.RestorePhaseRestoring,
+			},
+		}
+		k8sClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(latest).
+			WithStatusSubresource(&restorev1alpha1.VirtualMachineFileRestore{}).
+			Build()
+		reconciler := &VirtualMachineFileRestoreReconciler{
+			Client:    k8sClient,
+			APIReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(latest).Build(),
+			Recorder:  record.NewFakeRecorder(16),
+		}
+
+		skip, err := skipRestoringIfPhaseAdvanced(ctx, reconciler, vmfr)
+		require.NoError(t, err)
+		assert.True(t, skip)
+
+		updated := &restorev1alpha1.VirtualMachineFileRestore{}
+		require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(vmfr), updated))
+		assert.Equal(t, restorev1alpha1.RestorePhaseCleanup, updated.Status.Phase)
+		require.NotNil(t, updated.Status.RestoredFilesCount)
+		assert.Equal(t, int32(3), *updated.Status.RestoredFilesCount)
+	})
+
+	t.Run("CR not found skips restore", func(t *testing.T) {
+		vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "restore-skip-gone", Namespace: "test-ns"},
+			Status: restorev1alpha1.VirtualMachineFileRestoreStatus{
+				Phase: restorev1alpha1.RestorePhaseRestoring,
+			},
+		}
+		reconciler := &VirtualMachineFileRestoreReconciler{
+			Client:    fake.NewClientBuilder().WithScheme(scheme).WithObjects(vmfr).Build(),
+			APIReader: fake.NewClientBuilder().WithScheme(scheme).Build(),
+		}
+
+		skip, err := skipRestoringIfPhaseAdvanced(ctx, reconciler, vmfr)
+		require.NoError(t, err)
+		assert.True(t, skip)
+	})
+
+	t.Run("API reader failure returns transient error", func(t *testing.T) {
+		vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "restore-skip-fail", Namespace: "test-ns"},
+			Status: restorev1alpha1.VirtualMachineFileRestoreStatus{
+				Phase: restorev1alpha1.RestorePhaseRestoring,
+			},
+		}
+		boom := errors.New("apiserver unavailable")
+		failingReader := fake.NewClientBuilder().WithScheme(scheme).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+					if _, ok := obj.(*restorev1alpha1.VirtualMachineFileRestore); ok {
+						return boom
+					}
+					return nil
+				},
+			}).Build()
+		reconciler := &VirtualMachineFileRestoreReconciler{
+			Client:    fake.NewClientBuilder().WithScheme(scheme).Build(),
+			APIReader: failingReader,
+		}
+
+		skip, err := skipRestoringIfPhaseAdvanced(ctx, reconciler, vmfr)
+		require.Error(t, err)
+		assert.False(t, skip)
+		assert.True(t, IsTransient(err))
+		assert.Contains(t, err.Error(), "before restore command")
+	})
 }
 
 // Test transitionPhase timestamp logic - verifies StartTime/CompletionTime behavior
