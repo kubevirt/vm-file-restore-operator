@@ -27,15 +27,16 @@ import (
 )
 
 var (
-	csvVersion         = flag.String("csv-version", "", "")
-	replacesCsvVersion = flag.String("replaces-csv-version", "", "")
-	namespace          = flag.String("namespace", "", "")
-	pullPolicy         = flag.String("pull-policy", "", "")
-	logoBase64         = flag.String("logo-base64", "", "")
-	verbosity          = flag.String("verbosity", "1", "")
-	operatorVersion    = flag.String("operator-version", "", "")
-	operatorImage      = flag.String("operator-image", "", "")
-	dumpCRDs           = flag.Bool("dump-crds", false, "Include CRDs in output")
+	csvVersion          = flag.String("csv-version", "", "")
+	replacesCsvVersion  = flag.String("replaces-csv-version", "", "")
+	namespace           = flag.String("namespace", "", "")
+	pullPolicy          = flag.String("pull-policy", "", "")
+	logoBase64          = flag.String("logo-base64", "", "")
+	verbosity           = flag.String("verbosity", "1", "")
+	operatorVersion     = flag.String("operator-version", "", "")
+	operatorImage       = flag.String("operator-image", "", "")
+	dumpCRDs            = flag.Bool("dump-crds", false, "Include CRDs in output")
+	dumpNetworkPolicies = flag.Bool("dump-network-policies", false, "Include NetworkPolicy manifests in output")
 )
 
 //go:embed assets/filerestore.kubevirt.io_virtualmachinefilerestores.yaml
@@ -47,7 +48,6 @@ var fileRestoreOperatorsCRD []byte
 func main() {
 	flag.Parse()
 
-	// Validate required flags
 	if *csvVersion == "" {
 		fmt.Fprintln(os.Stderr, "Error: --csv-version is required")
 		flag.Usage()
@@ -92,7 +92,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// CSV has no leading "---"; controller-gen CRD assets already include one.
 	fmt.Println("---")
 	fmt.Print(string(yamlBytes))
 	if *dumpCRDs {
@@ -103,6 +102,18 @@ func main() {
 		if _, err := os.Stdout.Write(fileRestoreOperatorsCRD); err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing CRD: %v\n", err)
 			os.Exit(1)
+		}
+	}
+
+	if *dumpNetworkPolicies {
+		for _, np := range operator.GetNetworkPolicies(*namespace) {
+			npYAML, err := yaml.Marshal(np)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error marshaling NetworkPolicy to YAML: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("---")
+			fmt.Print(string(npYAML))
 		}
 	}
 }
