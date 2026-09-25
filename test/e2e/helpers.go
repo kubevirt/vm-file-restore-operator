@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -75,7 +76,7 @@ type TestEnv struct {
 	K8sClient      *kubernetes.Clientset
 	VirtClient     kubecli.KubevirtClient
 	SnapshotClient snapshotclientset.Interface
-	CRClient       client.Client
+	CRClient       client.WithWatch
 	Namespace      string
 	PrivateKeyPath string
 }
@@ -212,7 +213,7 @@ func vmiStatusDetail(vmi *kubevirtv1.VirtualMachineInstance) string {
 
 // initClients creates and returns Kubernetes, KubeVirt, snapshot, and controller-runtime clients
 func initClients() (
-	*kubernetes.Clientset, kubecli.KubevirtClient, snapshotclientset.Interface, client.Client, error,
+	*kubernetes.Clientset, kubecli.KubevirtClient, snapshotclientset.Interface, client.WithWatch, error,
 ) {
 	kubeconfig := os.Getenv("KUBECONFIG")
 	if kubeconfig == "" {
@@ -258,7 +259,7 @@ func initClients() (
 	}
 
 	// Create controller-runtime client for typed access to our CRs
-	crClient, err := client.New(config, client.Options{Scheme: scheme})
+	crClient, err := client.NewWithWatch(config, client.Options{Scheme: scheme})
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("failed to create controller-runtime client: %w", err)
 	}
@@ -363,7 +364,8 @@ users:
 
 	for _, d := range extraDisks {
 		disks = append(disks, kubevirtv1.Disk{
-			Name: d.Name,
+			Name:   d.Name,
+			Serial: d.Name,
 			DiskDevice: kubevirtv1.DiskDevice{
 				Disk: &kubevirtv1.DiskTarget{Bus: "virtio"},
 			},
@@ -949,4 +951,143 @@ func deleteFileRestoreIfExists(env *TestEnv, name string) {
 	}, 2*time.Minute, 5*time.Second).Should(gomega.Succeed())
 	// Ensure the hotplugged volume is detached before the next test runs on the shared VM.
 	assertRestoreVolumeDetached(env.VirtClient, env.Namespace, vmName, name)
+}
+
+func prepareBootDiskRestoreSnapshot(env *TestEnv, snapName, dataPath, dataFile, content string) {
+	_, err := runSSHCommand(vmName, env.Namespace,
+		fmt.Sprintf("mkdir -p %s && echo %s > %s && sync",
+			shellEscape(dataPath), shellEscape(content), shellEscape(dataFile)), env.PrivateKeyPath)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to write test data on guest")
+	err = createVolumeSnapshot(env.SnapshotClient, env.K8sClient, env.Namespace, bootDiskName, snapName)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to create boot disk VolumeSnapshot")
+	waitForVolumeSnapshotReady(env.SnapshotClient, env.Namespace, snapName)
+	_, err = runSSHCommand(vmName, env.Namespace, fmt.Sprintf("rm -f %s", shellEscape(dataFile)), env.PrivateKeyPath)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to delete live test file before restore")
+}
+
+var expectedRestorePhaseOrder = []filerestorev1alpha1.RestorePhase{
+	filerestorev1alpha1.RestorePhaseHotplugging,
+	filerestorev1alpha1.RestorePhaseWaitingForAttachment,
+	filerestorev1alpha1.RestorePhaseSSHConnecting,
+	filerestorev1alpha1.RestorePhaseRestoring,
+	filerestorev1alpha1.RestorePhaseCleanup,
+	filerestorev1alpha1.RestorePhaseSucceeded,
+}
+
+type phaseWatcher struct {
+	mu     sync.Mutex
+	phases []filerestorev1alpha1.RestorePhase
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func (w *phaseWatcher) snapshot() []filerestorev1alpha1.RestorePhase {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]filerestorev1alpha1.RestorePhase(nil), w.phases...)
+}
+
+func (w *phaseWatcher) close() {
+	w.cancel()
+	gomega.Eventually(w.done, 30*time.Second).Should(gomega.BeClosed())
+}
+
+func (w *phaseWatcher) waitForCompletion() {
+	gomega.Eventually(w.done, 30*time.Second).Should(gomega.BeClosed(),
+		"phase watch did not observe a terminal restore phase")
+}
+
+func startRestorePhaseWatcher(crClient client.WithWatch, namespace, name string) *phaseWatcher {
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := crClient.Watch(ctx, &filerestorev1alpha1.VirtualMachineFileRestoreList{},
+		client.InNamespace(namespace), client.MatchingFields{"metadata.name": name})
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to watch restore phases")
+
+	watcher := &phaseWatcher{cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(watcher.done)
+		var last filerestorev1alpha1.RestorePhase
+		for event := range stream.ResultChan() {
+			restore, ok := event.Object.(*filerestorev1alpha1.VirtualMachineFileRestore)
+			if !ok || restore.Name != name || restore.Status.Phase == "" {
+				continue
+			}
+			phase := restore.Status.Phase
+			if phase != last {
+				watcher.mu.Lock()
+				watcher.phases = append(watcher.phases, phase)
+				watcher.mu.Unlock()
+				last = phase
+			}
+			if phase == filerestorev1alpha1.RestorePhaseSucceeded ||
+				phase == filerestorev1alpha1.RestorePhaseFailed {
+				return
+			}
+		}
+	}()
+	return watcher
+}
+
+func assertExpectedRestorePhases(observed []filerestorev1alpha1.RestorePhase) {
+	gomega.Expect(observed).To(gomega.Equal(expectedRestorePhaseOrder),
+		"restore should progress through every expected persisted phase in order")
+}
+
+func formatDataDisk(vmiName, namespace, diskName, mountPoint, fstype, identityFile string) {
+	device := waitForDataDiskDevice(vmiName, namespace, diskName, identityFile)
+	setupScript := fmt.Sprintf(`set -ex
+parted -s /dev/%s mklabel gpt
+parted -s /dev/%s mkpart primary 1MiB 100%%
+sleep 2
+partprobe /dev/%s
+sleep 2
+PART=$(lsblk -ln -o NAME /dev/%s | tail -1)
+mkfs.%s /dev/$PART
+mkdir -p %s
+mount /dev/$PART %s
+sync
+`, device, device, device, device, fstype, shellEscape(mountPoint), shellEscape(mountPoint))
+	_, err := runSSHCommandWithTimeout(vmiName, namespace, setupScript, identityFile, 5*time.Minute)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to format %s disk %s", fstype, diskName)
+}
+
+func waitForDataDiskDevice(vmiName, namespace, diskName, identityFile string) string {
+	var device string
+	gomega.Eventually(func(g gomega.Gomega) {
+		var err error
+		device, err = findDataDiskDevice(vmiName, namespace, diskName, identityFile)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		g.Expect(device).NotTo(gomega.BeEmpty(), "Data disk %s not visible in guest", diskName)
+	}, 2*time.Minute, 5*time.Second).Should(gomega.Succeed())
+	return device
+}
+
+func findDataDiskDevice(vmiName, namespace, diskName, identityFile string) (string, error) {
+	output, err := runSSHCommand(vmiName, namespace, "lsblk -d -n -o NAME,SERIAL,TYPE", identityFile)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 3 && fields[1] == diskName && fields[2] == "disk" {
+			return fields[0], nil
+		}
+	}
+	return "", fmt.Errorf("data disk %s not found by serial", diskName)
+}
+
+func assertFilerestoreSSHAuth(
+	restore *filerestorev1alpha1.VirtualMachineFileRestore,
+	vmiName, namespace, identityFile string,
+) {
+	gomega.Expect(restore.Status.StartTime).NotTo(gomega.BeNil(), "restore startTime not set")
+	gomega.Expect(restore.Status.CompletionTime).NotTo(gomega.BeNil(), "restore completionTime not set")
+
+	journalCmd := "journalctl --since \"@%d\" --until \"@%d\" --no-pager 2>/dev/null | " +
+		"grep -i 'accepted publickey for filerestore' || true"
+	cmd := fmt.Sprintf(journalCmd, restore.Status.StartTime.Unix(), restore.Status.CompletionTime.Add(time.Second).Unix())
+	out, err := runSSHCommand(vmiName, namespace, cmd, identityFile)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred(), "Failed to read SSH auth log on guest")
+	gomega.Expect(strings.TrimSpace(out)).NotTo(gomega.BeEmpty(),
+		"SSH authentication log should show the operator connected as filerestore")
 }

@@ -309,8 +309,11 @@ var _ = Describe("Manager", Ordered, ContinueOnFailure, func() {
 				Expect(err).NotTo(HaveOccurred())
 
 				By("waiting for restore to complete")
-				waitForRestorePhase(env.CRClient, env.Namespace, pvcRestoreName,
+				restore := waitForRestorePhase(env.CRClient, env.Namespace, pvcRestoreName,
 					filerestorev1alpha1.RestorePhaseSucceeded)
+
+				By("verifying the operator authenticated as the restricted filerestore user")
+				assertFilerestoreSSHAuth(restore, vmName, env.Namespace, env.PrivateKeyPath)
 
 				By("verifying restored file integrity")
 				_, err = runSSHCommand(vmName, env.Namespace, fmt.Sprintf("test -f %s", testFilePath), env.PrivateKeyPath)
@@ -819,6 +822,40 @@ sync
 
 				assertSuccessfulRestoreCleanup(env.VirtClient, env.CRClient, env.Namespace, vmName, cleanupRestoreName, true)
 			})
+
+			It("should progress through all expected phases in order", func() {
+				const (
+					restoreName = "phase-order"
+					snapName    = "phase-order-snap"
+					dataPath    = "/home/donald/phase-order-data"
+					dataFile    = "/home/donald/phase-order-data/file.txt"
+				)
+
+				env := sharedEnv
+				DeferCleanup(func() {
+					deleteFileRestoreIfExists(env, restoreName)
+					deleteSnapshotIfExists(env, snapName)
+				})
+
+				By("preparing the backup snapshot")
+				prepareBootDiskRestoreSnapshot(env, snapName, dataPath, dataFile, "phase-order")
+
+				By("starting the restore phase watcher")
+				watcher := startRestorePhaseWatcher(env.CRClient, env.Namespace, restoreName)
+				defer watcher.close()
+
+				By("creating the restore CR")
+				err := createFileRestoreCR(env.CRClient, env.Namespace, restoreName, snapName, dataFile)
+				Expect(err).NotTo(HaveOccurred())
+
+				By("waiting for the restore to succeed")
+				waitForRestorePhase(env.CRClient, env.Namespace, restoreName,
+					filerestorev1alpha1.RestorePhaseSucceeded)
+				watcher.waitForCompletion()
+
+				By("verifying every expected persisted phase was observed in order")
+				assertExpectedRestorePhases(watcher.snapshot())
+			})
 		}) // end Context("standard restore operations") — shared VM is torn down here before special-VM tests
 
 		/*
@@ -1041,6 +1078,73 @@ umount /mnt/lvmdata
 			vgsAfter, err := runSSHCommand(vmName, env.Namespace, "vgs --noheadings -o vg_name", env.PrivateKeyPath)
 			Expect(err).NotTo(HaveOccurred(), "Failed to list VGs after restore")
 			Expect(vgsAfter).To(ContainSubstring(lvmVGName), "Original VG disappeared")
+		})
+
+		Context("formatted data disk restore coverage", Ordered, func() {
+			var env *TestEnv
+
+			BeforeAll(func() {
+				env = setupTestVM("e2e-filesystems",
+					ExtraDisk{Name: "ext4-data-dv", Size: "2Gi"},
+					ExtraDisk{Name: "xfs-data-dv", Size: "2Gi"},
+				)
+			})
+
+			DescribeTable("should restore files from formatted data disk snapshots",
+				func(fstype, dataDiskName string) {
+					restoreName := fstype + "-restore"
+					snapName := fstype + "-snap"
+					mountPoint := "/mnt/" + fstype + "-restore-data"
+					diskRelativePath := "/" + fstype + "-restore.dat"
+					dataFileOnDisk := mountPoint + diskRelativePath
+					testContent := fstype + "-restore-content"
+
+					DeferCleanup(func() {
+						deleteFileRestoreIfExists(env, restoreName)
+						deleteSnapshotIfExists(env, snapName)
+					})
+
+					if fstype == "xfs" {
+						By("installing xfsprogs")
+						Eventually(func(g Gomega) {
+							_, err := runSSHCommand(vmName, env.Namespace, "dnf install -y xfsprogs", env.PrivateKeyPath)
+							g.Expect(err).NotTo(HaveOccurred())
+						}, 3*time.Minute, 10*time.Second).Should(Succeed())
+					}
+
+					By(fmt.Sprintf("formatting data disk with %s", fstype))
+					formatDataDisk(vmName, env.Namespace, dataDiskName, mountPoint, fstype, env.PrivateKeyPath)
+
+					By("writing source data")
+					_, err := runSSHCommand(vmName, env.Namespace,
+						fmt.Sprintf("echo '%s' > %s && sync", testContent, shellEscape(dataFileOnDisk)), env.PrivateKeyPath)
+					Expect(err).NotTo(HaveOccurred())
+
+					By("unmounting the data disk before taking its snapshot")
+					_, err = runSSHCommand(vmName, env.Namespace,
+						fmt.Sprintf("sync && umount %s", shellEscape(mountPoint)), env.PrivateKeyPath)
+					Expect(err).NotTo(HaveOccurred())
+
+					By("creating the backup snapshot")
+					err = createVolumeSnapshot(env.SnapshotClient, env.K8sClient, env.Namespace, dataDiskName, snapName)
+					Expect(err).NotTo(HaveOccurred())
+					waitForVolumeSnapshotReady(env.SnapshotClient, env.Namespace, snapName)
+
+					By("creating the restore CR")
+					err = createFileRestoreCR(env.CRClient, env.Namespace, restoreName, snapName, diskRelativePath)
+					Expect(err).NotTo(HaveOccurred())
+					waitForRestorePhase(env.CRClient, env.Namespace, restoreName,
+						filerestorev1alpha1.RestorePhaseSucceeded)
+
+					By("verifying restored file content")
+					content, err := runSSHCommand(vmName, env.Namespace,
+						fmt.Sprintf("cat %s", shellEscape(diskRelativePath)), env.PrivateKeyPath)
+					Expect(err).NotTo(HaveOccurred(), "restored file missing at VM path %s", diskRelativePath)
+					Expect(content).To(ContainSubstring(testContent))
+				},
+				Entry("ext4", "ext4", "ext4-data-dv"),
+				Entry("xfs", "xfs", "xfs-data-dv"),
+			)
 		})
 	})
 
