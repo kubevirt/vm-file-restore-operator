@@ -421,7 +421,8 @@ bundle: manifests kustomize csv-generator csv-assets ## Generate bundle manifest
 		--namespace=$(NAMESPACE) \
 		--operator-image=$(IMG) \
 		--operator-version=$(VERSION) \
-		--dump-crds > bundle/manifests/vm-file-restore-operator.v$(VERSION).yaml
+		--dump-crds \
+		--dump-network-policies > bundle/manifests/vm-file-restore-operator.v$(VERSION).yaml
 
 .PHONY: bundle-build
 bundle-build: ## Build the bundle image.

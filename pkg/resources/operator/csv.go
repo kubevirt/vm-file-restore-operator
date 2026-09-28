@@ -29,6 +29,11 @@ import (
 	csvv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
 )
 
+const (
+	managerPodLabelKey = "name"
+	managerPodLabelVal = "vm-file-restore-operator-controller-manager"
+)
+
 type ClusterServiceVersionData struct {
 	CsvVersion         string
 	ReplacesCsvVersion string
@@ -133,13 +138,13 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 								Replicas: new(int32(1)),
 								Selector: &metav1.LabelSelector{
 									MatchLabels: map[string]string{
-										"name": "vm-file-restore-operator-controller-manager",
+										managerPodLabelKey: managerPodLabelVal,
 									},
 								},
 								Template: corev1.PodTemplateSpec{
 									ObjectMeta: metav1.ObjectMeta{
 										Labels: map[string]string{
-											"name": "vm-file-restore-operator-controller-manager",
+											managerPodLabelKey: managerPodLabelVal,
 										},
 									},
 									Spec: corev1.PodSpec{
@@ -157,6 +162,7 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 												ImagePullPolicy: corev1.PullPolicy(data.ImagePullPolicy),
 												Command:         []string{"/manager"},
 												Args: []string{
+													"--metrics-bind-address=:8443",
 													"--leader-elect",
 													"--health-probe-bind-address=:8081",
 												},
