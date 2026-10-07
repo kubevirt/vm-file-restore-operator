@@ -119,15 +119,53 @@ func (c *SSHClient) Close() error {
 	return c.client.Close()
 }
 
+// isRootOrDiskPath reports whether path is a filesystem root or disk-level path.
+// It rejects POSIX root ("/") and Windows drive roots (e.g. "C:\", "C:/", "c:\").
+// Restoring from a root path is almost certainly a misconfiguration and could have
+// destructive consequences on the guest VM.
+func isRootOrDiskPath(path string) bool {
+	// POSIX root
+	if path == "/" {
+		return true
+	}
+
+	// Windows drive root: single letter + colon + optional slash/backslash
+	// e.g. "C:\", "C:/", "c:\", "D:\"
+	if len(path) >= 2 && len(path) <= 3 {
+		letter := path[0]
+		if (letter >= 'A' && letter <= 'Z') || (letter >= 'a' && letter <= 'z') {
+			if path[1] == ':' {
+				if len(path) == 2 {
+					return true
+				}
+				if path[2] == '/' || path[2] == '\\' {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
 // BuildSSHCommand constructs the restore command to execute on the guest VM.
 // If sourcePath is empty, manual mode is assumed (no automatic restore).
+// Returns an error if mountPath or sourcePath is a root/disk-level path.
 // Panics if volumeName or mountPath are empty (caller error).
-func BuildSSHCommand(osType, volumeName, mountPath, sourcePath string) string {
+func BuildSSHCommand(osType, volumeName, mountPath, sourcePath string) (string, error) {
 	if volumeName == "" {
 		panic("BuildSSHCommand called with empty volumeName")
 	}
 	if mountPath == "" {
 		panic("BuildSSHCommand called with empty mountPath")
+	}
+
+	// Reject root/disk-level paths before any trimming
+	if isRootOrDiskPath(mountPath) {
+		return "", fmt.Errorf("mountPath %q is a root or disk-level path which is not allowed", mountPath)
+	}
+	if sourcePath != "" && isRootOrDiskPath(sourcePath) {
+		return "", fmt.Errorf("sourcePath %q is a root or disk-level path which is not allowed", sourcePath)
 	}
 
 	scriptPath := GetHelperScriptPath(osType)
@@ -157,7 +195,7 @@ func BuildSSHCommand(osType, volumeName, mountPath, sourcePath string) string {
 		}
 	}
 
-	return cmd
+	return cmd, nil
 }
 
 // BuildCleanupCommand constructs the cleanup command to execute on the guest VM.
