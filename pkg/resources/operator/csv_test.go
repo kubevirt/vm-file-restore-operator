@@ -136,6 +136,31 @@ func TestNewClusterServiceVersion(t *testing.T) {
 	}
 }
 
+func TestNetworkPolicyLabels(t *testing.T) {
+	base := &ClusterServiceVersionData{
+		CsvVersion:      "1.0.0",
+		Namespace:       "test-namespace",
+		OperatorImage:   "quay.io/kubevirt/vm-file-restore-operator:v1.0.0",
+		OperatorVersion: "1.0.0",
+	}
+
+	t.Run("label absent when AddNetworkPolicyLabels is false", func(t *testing.T) {
+		csv, err := NewClusterServiceVersion(base)
+		require.NoError(t, err)
+		podLabels := csv.Spec.InstallStrategy.StrategySpec.DeploymentSpecs[0].Spec.Template.Labels
+		assert.NotContains(t, podLabels, allowAccessClusterServicesLabel)
+	})
+
+	t.Run("label present when AddNetworkPolicyLabels is true", func(t *testing.T) {
+		data := *base
+		data.AddNetworkPolicyLabels = true
+		csv, err := NewClusterServiceVersion(&data)
+		require.NoError(t, err)
+		podLabels := csv.Spec.InstallStrategy.StrategySpec.DeploymentSpecs[0].Spec.Template.Labels
+		assert.Equal(t, "true", podLabels[allowAccessClusterServicesLabel])
+	})
+}
+
 func TestCSVRBACPermissions(t *testing.T) {
 	data := &ClusterServiceVersionData{
 		CsvVersion:      "1.0.0",

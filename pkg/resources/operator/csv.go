@@ -27,17 +27,22 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	csvv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
+
+	"kubevirt.io/vm-file-restore-operator/pkg/common"
 )
 
+const allowAccessClusterServicesLabel = "np.kubevirt.io/allow-access-cluster-services"
+
 type ClusterServiceVersionData struct {
-	CsvVersion         string
-	ReplacesCsvVersion string
-	Namespace          string
-	ImagePullPolicy    string
-	IconBase64         string
-	Verbosity          string
-	OperatorVersion    string
-	OperatorImage      string
+	CsvVersion             string
+	ReplacesCsvVersion     string
+	Namespace              string
+	ImagePullPolicy        string
+	IconBase64             string
+	Verbosity              string
+	OperatorVersion        string
+	OperatorImage          string
+	AddNetworkPolicyLabels bool
 }
 
 func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.ClusterServiceVersion, error) {
@@ -133,13 +138,13 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 								Replicas: new(int32(1)),
 								Selector: &metav1.LabelSelector{
 									MatchLabels: map[string]string{
-										"name": "vm-file-restore-operator-controller-manager",
+										common.ManagerPodLabelKey: common.ManagerPodLabelVal,
 									},
 								},
 								Template: corev1.PodTemplateSpec{
 									ObjectMeta: metav1.ObjectMeta{
 										Labels: map[string]string{
-											"name": "vm-file-restore-operator-controller-manager",
+											common.ManagerPodLabelKey: common.ManagerPodLabelVal,
 										},
 									},
 									Spec: corev1.PodSpec{
@@ -157,6 +162,7 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 												ImagePullPolicy: corev1.PullPolicy(data.ImagePullPolicy),
 												Command:         []string{"/manager"},
 												Args: []string{
+													"--metrics-bind-address=:8443",
 													"--leader-elect",
 													"--health-probe-bind-address=:8081",
 												},
@@ -314,6 +320,16 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 									Resources: []string{"pods/exec"},
 									Verbs:     []string{"create"},
 								},
+								{
+									APIGroups: []string{"authentication.k8s.io"},
+									Resources: []string{"tokenreviews"},
+									Verbs:     []string{"create"},
+								},
+								{
+									APIGroups: []string{"authorization.k8s.io"},
+									Resources: []string{"subjectaccessreviews"},
+									Verbs:     []string{"create"},
+								},
 							},
 						},
 					},
@@ -342,6 +358,11 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 
 	if data.ReplacesCsvVersion != "" {
 		csv.Spec.Replaces = "vm-file-restore-operator." + data.ReplacesCsvVersion
+	}
+
+	if data.AddNetworkPolicyLabels {
+		podLabels := csv.Spec.InstallStrategy.StrategySpec.DeploymentSpecs[0].Spec.Template.Labels
+		podLabels[allowAccessClusterServicesLabel] = "true"
 	}
 
 	return csv, nil
