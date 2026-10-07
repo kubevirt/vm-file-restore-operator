@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v6/apis/volumesnapshot/v1"
 	"github.com/stretchr/testify/assert"
@@ -205,6 +206,68 @@ func TestHotplugVolume_SnapshotContentReadFailsFallsBackToDefault(t *testing.T) 
 
 	dv := getDataVolume(t, c)
 	assert.Nil(t, dv.Spec.Storage.VolumeMode, "should fall back to default (nil) volume mode")
+}
+
+// When the DataVolume is in a terminal Failed phase, hotplug must return a non-transient error.
+func TestHotplugVolume_FailedDataVolumeReturnsNonTransientError(t *testing.T) {
+	existingDV := &cdiv1beta1.DataVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: testRestoreVolumeName, Namespace: "default"},
+		Status:     cdiv1beta1.DataVolumeStatus{Phase: cdiv1beta1.Failed},
+	}
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithStatusSubresource(&cdiv1beta1.DataVolume{}).
+		WithObjects(existingDV, targetVM()).
+		Build()
+
+	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR(), targetVM())
+	require.Error(t, err)
+	assert.False(t, IsTransient(err), "Failed DataVolume must produce a non-transient (terminal) error")
+	assert.Contains(t, err.Error(), "Failed")
+}
+
+// When the DataVolume has been in a non-Succeeded phase longer than the provisioning timeout,
+// hotplug must return a non-transient error so the VMFR can transition to Failed.
+func TestHotplugVolume_TimedOutDataVolumeReturnsNonTransientError(t *testing.T) {
+	oldTimestamp := metav1.NewTime(time.Now().Add(-11 * time.Minute))
+	existingDV := &cdiv1beta1.DataVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              testRestoreVolumeName,
+			Namespace:         "default",
+			CreationTimestamp: oldTimestamp,
+		},
+		Status: cdiv1beta1.DataVolumeStatus{Phase: cdiv1beta1.Pending},
+	}
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithStatusSubresource(&cdiv1beta1.DataVolume{}).
+		WithObjects(existingDV, targetVM()).
+		Build()
+
+	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR(), targetVM())
+	require.Error(t, err)
+	assert.False(t, IsTransient(err), "timed-out DataVolume must produce a non-transient error")
+	assert.Contains(t, err.Error(), "timed out")
+}
+
+// When the DataVolume is in Pending but still within the provisioning timeout, hotplug
+// must return a transient error so the reconciler retries.
+func TestHotplugVolume_PendingDataVolumeWithinTimeoutReturnsTransientError(t *testing.T) {
+	recentTimestamp := metav1.NewTime(time.Now().Add(-1 * time.Minute))
+	existingDV := &cdiv1beta1.DataVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              testRestoreVolumeName,
+			Namespace:         "default",
+			CreationTimestamp: recentTimestamp,
+		},
+		Status: cdiv1beta1.DataVolumeStatus{Phase: cdiv1beta1.Pending},
+	}
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithStatusSubresource(&cdiv1beta1.DataVolume{}).
+		WithObjects(existingDV, targetVM()).
+		Build()
+
+	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR(), targetVM())
+	require.Error(t, err)
+	assert.True(t, IsTransient(err), "Pending DataVolume within timeout must produce a transient error")
 }
 
 // When the DataVolume already exists, hotplug must not re-read the snapshot resources.

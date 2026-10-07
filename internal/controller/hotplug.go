@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	snapshotv1 "github.com/kubernetes-csi/external-snapshotter/client/v6/apis/volumesnapshot/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -188,8 +189,15 @@ func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader
 			return fmt.Errorf("failed to get DataVolume: %w", err)
 		}
 
+		if dataVolume.Status.Phase == cdiv1beta1.Failed {
+			// Terminal: CDI will never recover a Failed DataVolume.
+			return fmt.Errorf("DataVolume failed to provision (phase: Failed)")
+		}
+		const maxDVProvisioningTime = 10 * time.Minute
 		if dataVolume.Status.Phase != cdiv1beta1.Succeeded {
-			// This is a transient condition - caller will retry
+			if !dataVolume.CreationTimestamp.IsZero() && time.Since(dataVolume.CreationTimestamp.Time) > maxDVProvisioningTime {
+				return fmt.Errorf("DataVolume provisioning timed out after %v (phase: %s)", maxDVProvisioningTime, dataVolume.Status.Phase)
+			}
 			return NewTransientError(fmt.Sprintf("DataVolume is provisioning (phase: %s), will retry", dataVolume.Status.Phase))
 		}
 
