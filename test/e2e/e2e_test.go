@@ -26,7 +26,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	authzv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	filerestorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
@@ -679,6 +681,53 @@ sync
 			})
 
 			/*
+				Path normalization during automatic restore.
+
+				Preconditions:
+					- Running Linux VM with a snapshot containing a test directory
+
+				Steps:
+					1. Delete the directory from the live VM after snapshot
+					2. Restore using a source path with double and trailing slashes
+					3. Read the file at its canonical target path
+
+				Expected: Restore succeeds and the file appears at the original target
+				path with the expected content. The API has no separate targetPath field.
+			*/
+			It("should normalize source and target paths with trailing and double slashes", func() {
+				const (
+					snapName    = "slash-path-snap"
+					restoreName = "slash-path-restore"
+					dir         = "/var/tmp/e2e-slash-path"
+					file        = dir + "/content.txt"
+				)
+				env := sharedEnv
+				DeferCleanup(func() {
+					_, _ = runSSHCommand(vmName, env.Namespace, "rm -rf "+dir, env.PrivateKeyPath)
+				})
+				DeferCleanup(func() { deleteSnapshotIfExists(env, snapName) })
+				DeferCleanup(func() { deleteFileRestoreIfExists(env, restoreName) })
+
+				By("creating and snapshotting the source directory")
+				prepareBootDiskRestoreSnapshot(env, snapName, dir, file, "slash-content")
+				_, err := runSSHCommand(vmName, env.Namespace,
+					"rm -rf "+shellEscape(dir), env.PrivateKeyPath)
+				Expect(err).NotTo(HaveOccurred())
+
+				By("restoring with redundant slashes")
+				err = createFileRestoreCR(env.CRClient, env.Namespace, restoreName, snapName,
+					"/var//tmp//e2e-slash-path//")
+				Expect(err).NotTo(HaveOccurred())
+				waitForRestorePhase(env.CRClient, env.Namespace, restoreName, filerestorev1alpha1.RestorePhaseSucceeded)
+
+				By("verifying the file at its canonical target path")
+				content, err := runSSHCommand(vmName, env.Namespace, "cat "+file, env.PrivateKeyPath)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(strings.TrimSpace(content)).To(Equal("slash-content"))
+				assertSuccessfulRestoreCleanup(env.VirtClient, env.CRClient, env.Namespace, vmName, restoreName, true)
+			})
+
+			/*
 				Temporary resources cleaned up after successful restore.
 
 				Preconditions:
@@ -1291,6 +1340,201 @@ umount /mnt/lvmdata
 				restore := waitForRestoreFailed(env.CRClient, env.Namespace, restoreName, 10*time.Minute)
 				assertErrorMessageContains(restore, "No mountable filesystem found")
 			})
+			/*
+				[NEGATIVE] Target capacity exhausted during file transfer.
+
+				Preconditions:
+					- Running Linux VM with guest helper configured
+					- Snapshot contains a file larger than the free space left on the VM disk
+
+				Steps:
+					1. Create and snapshot a file on the VM disk
+					2. Delete the live copy, then fill the VM disk until less space remains
+					   than the file needs
+					3. Restore the file and wait for Failed
+					4. Inspect the failure condition and temporary resources
+
+				Expected: Failure explains that the target is out of space; the hotplugged
+				volume and temporary DataVolume are removed.
+			*/
+			It("[NEGATIVE] should report clear error and clean up when target disk capacity is exhausted", func() {
+				const (
+					snapName    = "capacity-exhausted-snap"
+					restoreName = "capacity-exhausted-restore"
+					dir         = "/var/tmp/e2e-capacity-target"
+					file        = dir + "/large-file"
+					filler      = "/var/tmp/e2e-capacity-filler"
+					sourceMiB   = 128
+					sourceBytes = sourceMiB << 20
+					reserve     = 64 << 20
+					targetFree  = 96 << 20
+					maxChunkMiB = 512
+				)
+				DeferCleanup(func() { deleteSnapshotIfExists(env, snapName) })
+				DeferCleanup(func() { deleteFileRestoreIfExists(env, restoreName) })
+				DeferCleanup(func() {
+					_, cleanupErr := runSSHCommand(vmName, env.Namespace,
+						fmt.Sprintf("rm -f %s && rm -rf %s && sync", filler, dir), env.PrivateKeyPath)
+					Expect(cleanupErr).NotTo(HaveOccurred(), "failed to free the VM disk after the capacity test")
+				})
+
+				By("creating and snapshotting a file on the VM disk")
+				_, err := runSSHCommand(vmName, env.Namespace, "mkdir -p "+dir, env.PrivateKeyPath)
+				Expect(err).NotTo(HaveOccurred())
+				createLargeFileOnVM(vmName, env.Namespace, file, sourceBytes, env.PrivateKeyPath)
+				snapshotBootDisk(env, snapName)
+
+				By("deleting the live file")
+				_, err = runSSHCommand(vmName, env.Namespace,
+					fmt.Sprintf("rm -f %s && sync && test ! -e %s", file, file), env.PrivateKeyPath)
+				Expect(err).NotTo(HaveOccurred())
+
+				freeBytes := func() int64 {
+					// %a excludes reserved blocks that %f reports as free even after dd reaches ENOSPC.
+					output, readErr := runSSHCommand(vmName, env.Namespace,
+						fmt.Sprintf("stat -f -c '%%a %%S' %s", dir), env.PrivateKeyPath)
+					Expect(readErr).NotTo(HaveOccurred())
+					var blocks, blockSize int64
+					_, scanErr := fmt.Sscan(output, &blocks, &blockSize)
+					Expect(scanErr).NotTo(HaveOccurred())
+					return blocks * blockSize
+				}
+
+				By("filling the VM disk until less space remains than the file needs")
+				remaining := freeBytes()
+				Expect(remaining).To(BeNumerically(">", sourceBytes+targetFree))
+				for remaining >= targetFree {
+					chunkMiB := min(int64(maxChunkMiB), (remaining-reserve)/(2<<20))
+					Expect(chunkMiB).To(BeNumerically(">", 0))
+					output, fillErr := runSSHCommandWithTimeout(vmName, env.Namespace,
+						fmt.Sprintf("dd if=/dev/urandom of=%s bs=1M count=%d oflag=append conv=notrunc status=none && sync",
+							filler, chunkMiB), env.PrivateKeyPath, 10*time.Minute)
+					if fillErr != nil && strings.Contains(output, "No space left on device") {
+						// Leave room for SSH and the guest helper while keeping less space than the restore needs.
+						_, err = runSSHCommand(vmName, env.Namespace,
+							fmt.Sprintf("truncate -s -64M %s && sync", filler), env.PrivateKeyPath)
+						Expect(err).NotTo(HaveOccurred(), "failed to free space for the restore after filling the VM disk")
+						remaining = freeBytes()
+						Expect(remaining).To(BeNumerically(">", 0))
+						Expect(remaining).To(BeNumerically("<", targetFree),
+							"VM disk still has enough free space for the restore after the fill reached capacity")
+						break
+					}
+					Expect(fillErr).NotTo(HaveOccurred(), "failed to write %d MiB to VM disk: %s", chunkMiB, output)
+					nextRemaining := freeBytes()
+					Expect(nextRemaining).To(BeNumerically("<", remaining), "VM disk free space did not decrease")
+					remaining = nextRemaining
+				}
+				_, err = runSSHCommand(vmName, env.Namespace, "sync", env.PrivateKeyPath)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(freeBytes()).To(BeNumerically("<", targetFree))
+
+				By("creating the restore and waiting for Failed")
+				err = createFileRestoreCR(env.CRClient, env.Namespace, restoreName, snapName, file)
+				Expect(err).NotTo(HaveOccurred())
+				failed := waitForRestoreFailed(env.CRClient, env.Namespace, restoreName, 5*time.Minute)
+				assertErrorMessageContains(failed, "No space left on device")
+
+				By("verifying temporary resources were cleaned up")
+				assertRestoreVolumeDetached(env.VirtClient, env.Namespace, vmName, restoreName)
+				assertNoManagedRestoreDataVolume(env.CRClient, env.Namespace, restoreName)
+			})
+
+			/*
+				[NEGATIVE] Concurrent restore requests against one VM.
+
+				Preconditions:
+					- Running Linux VM with a ready backup snapshot
+
+				Steps:
+					1. Start a manual restore and wait for VolumeReady
+					2. Submit a second restore targeting the same VM
+					3. Check the second restore's Failed status and the first restore's phase
+
+				Expected: The second restore is rejected with a conflict error; the first
+				restore stays available and the second leaves no temporary volume.
+			*/
+			It("[NEGATIVE] should reject a second restore targeting the same VM while one is in progress", func() {
+				const (
+					snapName = "concurrent-restore-snap"
+					first    = "concurrent-restore-first"
+					second   = "concurrent-restore-second"
+				)
+				DeferCleanup(func() { deleteSnapshotIfExists(env, snapName) })
+				DeferCleanup(func() { deleteFileRestoreIfExists(env, first) })
+				DeferCleanup(func() { deleteFileRestoreIfExists(env, second) })
+
+				By("creating a ready backup snapshot")
+				snapshotBootDisk(env, snapName)
+
+				By("holding the first restore in manual VolumeReady mode")
+				err := createFileRestoreCR(env.CRClient, env.Namespace, first, snapName, "")
+				Expect(err).NotTo(HaveOccurred())
+				waitForRestorePhase(env.CRClient, env.Namespace, first, filerestorev1alpha1.RestorePhaseVolumeReady)
+
+				By("submitting another restore for the same VM")
+				err = createFileRestoreCR(env.CRClient, env.Namespace, second, snapName, "/home/donald")
+				Expect(err).NotTo(HaveOccurred())
+				failed := waitForRestoreFailed(env.CRClient, env.Namespace, second, 3*time.Minute)
+				assertErrorMessageContains(failed, "another restore is in progress")
+				Expect(getFileRestore(env.CRClient, env.Namespace, first).Status.Phase).To(
+					Equal(filerestorev1alpha1.RestorePhaseVolumeReady))
+				assertRestoreVolumeDetached(env.VirtClient, env.Namespace, vmName, second)
+				assertNoManagedRestoreDataVolume(env.CRClient, env.Namespace, second)
+			})
+
+			/*
+				[NEGATIVE] Parent traversal in a source path.
+
+				Preconditions:
+					- Running Linux VM with a snapshot of the protected file
+					- Live copy has a different sentinel value
+
+				Steps:
+					1. Submit a source path containing a /../ component
+					2. Wait for Failed and inspect the failure condition
+					3. Verify the live file retains its sentinel value
+
+				Expected: The helper rejects the unsafe path before copying; no target
+				file changes and temporary restore resources are removed.
+			*/
+			It("[NEGATIVE] should reject source paths containing parent traversal without modifying files", func() {
+				const (
+					snapName    = "traversal-path-snap"
+					restoreName = "traversal-path-restore"
+					dir         = "/var/tmp/e2e-traversal-path"
+					file        = dir + "/protected.txt"
+				)
+				DeferCleanup(func() {
+					_, _ = runSSHCommand(vmName, env.Namespace, "rm -rf "+dir, env.PrivateKeyPath)
+				})
+				DeferCleanup(func() { deleteSnapshotIfExists(env, snapName) })
+				DeferCleanup(func() { deleteFileRestoreIfExists(env, restoreName) })
+
+				By("preparing the parent traversal path")
+				_, err := runSSHCommand(vmName, env.Namespace,
+					"mkdir -p "+shellEscape(dir+"/subdir"), env.PrivateKeyPath)
+				Expect(err).NotTo(HaveOccurred())
+
+				By("snapshotting the old file and changing the live copy")
+				prepareBootDiskRestoreSnapshot(env, snapName, dir, file, "old-content")
+				_, err = runSSHCommand(vmName, env.Namespace, "printf sentinel-content > "+file, env.PrivateKeyPath)
+				Expect(err).NotTo(HaveOccurred())
+
+				By("creating a restore with a parent-directory component")
+				err = createFileRestoreCR(env.CRClient, env.Namespace, restoreName, snapName,
+					dir+"/subdir/../protected.txt")
+				Expect(err).NotTo(HaveOccurred())
+				failed := waitForRestoreFailed(env.CRClient, env.Namespace, restoreName, 5*time.Minute)
+				assertErrorMessageContains(failed, "unsafe parent-directory")
+
+				By("verifying the live file was not changed")
+				content, err := runSSHCommand(vmName, env.Namespace, "cat "+file, env.PrivateKeyPath)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(strings.TrimSpace(content)).To(Equal("sentinel-content"))
+				assertRestoreVolumeDetached(env.VirtClient, env.Namespace, vmName, restoreName)
+				assertNoManagedRestoreDataVolume(env.CRClient, env.Namespace, restoreName)
+			})
 		})
 
 		/*
@@ -1530,6 +1774,72 @@ umount /mnt/lvmdata
 			assertErrorMessageContains(restore,
 				fmt.Sprintf("target VM %s is not running (no VMI found)", vmName))
 		})
+	})
+
+	/*
+		RBAC permissions for the three user-facing VirtualMachineFileRestore roles.
+
+		Preconditions:
+			- The operator's viewer, editor, and admin ClusterRoles are installed
+
+		Steps:
+			1. Bind each ClusterRole to a dedicated service account in a test namespace
+			2. Check create, delete, and get using SubjectAccessReviews
+
+		Expected: Viewer can get but cannot create or delete; editor and admin can
+		create, delete, and get VirtualMachineFileRestore resources.
+	*/
+	It("should enforce RBAC per role for VirtualMachineFileRestore create delete and get", func() {
+		env := setupTestEnv("e2e-restore-rbac")
+		ctx := context.Background()
+		roles := []struct {
+			name    string
+			allowed map[string]bool
+		}{
+			{"viewer", map[string]bool{"get": true}},
+			{"editor", map[string]bool{"create": true, "delete": true, "get": true}},
+			{"admin", map[string]bool{"create": true, "delete": true, "get": true}},
+		}
+
+		for _, role := range roles {
+			saName := "restore-" + role.name
+			By("creating a service account and RoleBinding for the " + role.name + " role")
+			_, err := env.K8sClient.CoreV1().ServiceAccounts(env.Namespace).Create(ctx,
+				&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName}}, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = env.K8sClient.RbacV1().RoleBindings(env.Namespace).Create(ctx, &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: saName},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "ClusterRole",
+					Name:     "vm-file-restore-virtualmachinefilerestore-" + role.name + "-role",
+				},
+				Subjects: []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: saName, Namespace: env.Namespace}},
+			}, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, verb := range []string{"create", "delete", "get"} {
+				By(fmt.Sprintf("checking %s permission for the %s role", verb, role.name))
+				Eventually(func(g Gomega) {
+					review, reviewErr := env.K8sClient.AuthorizationV1().SubjectAccessReviews().Create(ctx,
+						&authzv1.SubjectAccessReview{Spec: authzv1.SubjectAccessReviewSpec{
+							User: fmt.Sprintf("system:serviceaccount:%s:%s", env.Namespace, saName),
+							Groups: []string{
+								"system:serviceaccounts", "system:serviceaccounts:" + env.Namespace, "system:authenticated",
+							},
+							ResourceAttributes: &authzv1.ResourceAttributes{
+								Namespace: env.Namespace,
+								Group:     "filerestore.kubevirt.io",
+								Resource:  "virtualmachinefilerestores",
+								Verb:      verb,
+							},
+						}}, metav1.CreateOptions{})
+					g.Expect(reviewErr).NotTo(HaveOccurred())
+					g.Expect(review.Status.EvaluationError).To(BeEmpty())
+					g.Expect(review.Status.Allowed).To(Equal(role.allowed[verb]))
+				}, time.Minute, time.Second).Should(Succeed())
+			}
+		}
 	})
 
 	Context("FileRestoreOperator", func() {
