@@ -208,7 +208,7 @@ func createConfigMap(ctx context.Context, c client.Client, namespace, pubKeyStr 
 func reconcilePublicKey(ctx context.Context, c client.Client, secret *corev1.Secret, cm *corev1.ConfigMap) error {
 	privKeyPEM := secret.Data[corev1.SSHAuthPrivateKey]
 	if len(privKeyPEM) == 0 {
-		return fmt.Errorf("Secret is missing %s", corev1.SSHAuthPrivateKey)
+		return fmt.Errorf("secret is missing %s", corev1.SSHAuthPrivateKey)
 	}
 	signer, err := ssh.ParsePrivateKey(privKeyPEM)
 	if err != nil {

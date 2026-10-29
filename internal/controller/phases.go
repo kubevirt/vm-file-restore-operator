@@ -34,6 +34,20 @@ import (
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 )
 
+const (
+	// maxAttachmentRetries is the number of polling attempts before declaring volume attachment a failure (~5 minutes).
+	maxAttachmentRetries = 60
+	// maxSSHRetries is the number of SSH attempts before giving up (~2 minutes).
+	maxSSHRetries = 24
+
+	// retryBaseInterval is the base delay between polling attempts (attachment, SSH, hotplug).
+	retryBaseInterval = 5 * time.Second
+	// retryMaxInterval is the upper bound for exponential backoff.
+	retryMaxInterval = 20 * time.Second
+	// restoreTimeout is the maximum time allowed for the guest-side restore operation.
+	restoreTimeout = 10 * time.Minute
+)
+
 // getSourceName returns the source name (PVC or snapshot name) from the VMFR spec.
 // This is used to generate unique mount paths.
 func getSourceName(vmfr *restorev1alpha1.VirtualMachineFileRestore) string {
@@ -121,41 +135,41 @@ func transitionPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler
 	return ctrl.Result{Requeue: true}, nil
 }
 
-// incrementRetryAndRequeue increments a retry counter and requeues with exponential backoff.
+// incrementRetryAndRequeue increments a retry counter annotation, updates the last-check
+// timestamp, and requeues with exponential backoff — all in a single API patch.
 // retryType should be "attachment" or "ssh".
 //
 //nolint:unparam // baseDelay is kept as parameter for future flexibility
 func incrementRetryAndRequeue(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vmfr *restorev1alpha1.VirtualMachineFileRestore, retryType string, baseDelay time.Duration) (ctrl.Result, error) {
 	patch := client.MergeFrom(vmfr.DeepCopy())
 
+	var counterKey, timeKey string
 	switch retryType {
 	case "attachment":
-		vmfr.Status.AttachmentRetries++
+		counterKey = annotationAttachmentRetries
+		timeKey = annotationLastAttachmentCheck
 	case "ssh":
-		vmfr.Status.SSHRetries++
+		counterKey = annotationSSHRetries
+		timeKey = annotationLastSSHCheck
+	default:
+		return ctrl.Result{}, fmt.Errorf("unknown retryType %q", retryType)
 	}
+	retries := getAnnotationInt32(vmfr, counterKey) + 1
+	setAnnotationInt32(vmfr, counterKey, retries)
+	setAnnotationTime(vmfr, timeKey, time.Now())
 
-	if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
+	if err := r.Patch(ctx, vmfr, patch); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to increment %s retry counter: %w", retryType, err)
 	}
 
 	// Use exponential backoff with cap (issue #21)
 	delay := baseDelay
-	var retries int32
-	if retryType == "attachment" {
-		retries = vmfr.Status.AttachmentRetries
-	} else {
-		retries = vmfr.Status.SSHRetries
-	}
 
-	// Double delay every 5 retries, capped at 30 seconds
+	// Double delay every 5 retries, capped at retryMaxInterval
 	if retries >= 5 && retries < 10 {
 		delay = baseDelay * 2
 	} else if retries >= 10 {
-		delay = baseDelay * 4
-	}
-	if delay > 30*time.Second {
-		delay = 30 * time.Second
+		delay = min(baseDelay*4, retryMaxInterval)
 	}
 
 	return ctrl.Result{RequeueAfter: delay}, nil
@@ -438,7 +452,7 @@ func handleHotpluggingPhase(ctx context.Context, r *VirtualMachineFileRestoreRec
 		// Issue #5: Handle transient errors by requeuing instead of failing
 		if IsTransient(err) {
 			logger.Info("Hotplug encountered transient condition, will retry", "error", err)
-			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+			return ctrl.Result{RequeueAfter: retryBaseInterval}, nil
 		}
 		return failRestore(ctx, r, vmfr, err, "failed to hotplug volume to VM")
 	}
@@ -456,20 +470,19 @@ func handleHotpluggingPhase(ctx context.Context, r *VirtualMachineFileRestoreRec
 func handleWaitingForAttachmentPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vmfr *restorev1alpha1.VirtualMachineFileRestore) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Check timeout (issue #6): max 5 minutes (60 retries * 5 seconds)
-	const maxAttachmentWait = 60
-	if vmfr.Status.AttachmentRetries >= maxAttachmentWait {
+	// Check timeout (issue #6): max 5 minutes (maxAttachmentRetries * 5 seconds)
+	if getAnnotationInt32(vmfr, annotationAttachmentRetries) >= maxAttachmentRetries {
 		return failRestore(ctx, r, vmfr,
 			fmt.Errorf("volume attachment timeout"),
-			fmt.Sprintf("volume did not attach after %d attempts (5 minutes)", maxAttachmentWait))
+			fmt.Sprintf("volume did not attach after %d attempts (5 minutes)", maxAttachmentRetries))
 	}
 
-	// Rate limiting: ensure at least 5 seconds between attachment checks
+	// Rate limiting: ensure at least retryBaseInterval between attachment checks
 	// to prevent rapid reconciliation loops from external triggers (VMI updates, etc.)
-	if vmfr.Status.LastAttachmentCheckTime != nil {
-		timeSinceLastCheck := time.Since(vmfr.Status.LastAttachmentCheckTime.Time)
-		if timeSinceLastCheck < 5*time.Second {
-			remainingWait := 5*time.Second - timeSinceLastCheck
+	if lastCheck := getAnnotationTime(vmfr, annotationLastAttachmentCheck); lastCheck != nil {
+		timeSinceLastCheck := time.Since(*lastCheck)
+		if timeSinceLastCheck < retryBaseInterval {
+			remainingWait := retryBaseInterval - timeSinceLastCheck
 			logger.Info("Rate limiting attachment check", "remainingWait", remainingWait)
 			return ctrl.Result{RequeueAfter: remainingWait}, nil
 		}
@@ -497,31 +510,24 @@ func handleWaitingForAttachmentPhase(ctx context.Context, r *VirtualMachineFileR
 		}
 	}
 
-	// Update last check timestamp before checking status
-	now := metav1.Now()
-	patch := client.MergeFrom(vmfr.DeepCopy())
-	vmfr.Status.LastAttachmentCheckTime = &now
-	if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
-		logger.Error(err, "Failed to update last attachment check time")
-		return ctrl.Result{}, err
-	}
+	attempt := getAnnotationInt32(vmfr, annotationAttachmentRetries) + 1
 
 	// If volume not found in status, increment retry and requeue
 	if volumeStatus == nil {
-		logger.Info("Volume not yet in VMI status, requeuing", "volumeName", volumeName, "attempt", vmfr.Status.AttachmentRetries+1)
-		return incrementRetryAndRequeue(ctx, r, vmfr, "attachment", 5*time.Second)
+		logger.Info("Volume not yet in VMI status, requeuing", "volumeName", volumeName, "attempt", attempt)
+		return incrementRetryAndRequeue(ctx, r, vmfr, "attachment", retryBaseInterval)
 	}
 
 	// If volume not bound, increment retry and requeue
 	if volumeStatus.Phase != v1.VolumeReady {
-		logger.Info("Volume not yet bound", "volumeName", volumeName, "phase", volumeStatus.Phase, "attempt", vmfr.Status.AttachmentRetries+1)
-		return incrementRetryAndRequeue(ctx, r, vmfr, "attachment", 5*time.Second)
+		logger.Info("Volume not yet bound", "volumeName", volumeName, "phase", volumeStatus.Phase, "attempt", attempt)
+		return incrementRetryAndRequeue(ctx, r, vmfr, "attachment", retryBaseInterval)
 	}
 
 	// If volume bound but no target, increment retry and requeue
 	if volumeStatus.Target == "" {
-		logger.Info("Volume bound but target not set", "volumeName", volumeName, "attempt", vmfr.Status.AttachmentRetries+1)
-		return incrementRetryAndRequeue(ctx, r, vmfr, "attachment", 5*time.Second)
+		logger.Info("Volume bound but target not set", "volumeName", volumeName, "attempt", attempt)
+		return incrementRetryAndRequeue(ctx, r, vmfr, "attachment", retryBaseInterval)
 	}
 
 	// Verify it's actually a hotplug volume
@@ -532,13 +538,12 @@ func handleWaitingForAttachmentPhase(ctx context.Context, r *VirtualMachineFileR
 
 	logger.Info("Volume attached and bound", "volumeName", volumeName, "target", volumeStatus.Target)
 
-	// Reset retry counter
-	if vmfr.Status.AttachmentRetries > 0 {
-		patch := client.MergeFrom(vmfr.DeepCopy())
-		vmfr.Status.AttachmentRetries = 0
-		if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
-			logger.Error(err, "Failed to reset attachment retry counter")
-		}
+	// Clear attachment retry annotations (unconditional: timestamp is always set)
+	patch := client.MergeFrom(vmfr.DeepCopy())
+	delete(vmfr.Annotations, annotationAttachmentRetries)
+	delete(vmfr.Annotations, annotationLastAttachmentCheck)
+	if err := r.Patch(ctx, vmfr, patch); err != nil {
+		logger.Error(err, "Failed to clear attachment retry annotations")
 	}
 
 	// Transition to SSHConnecting
@@ -549,32 +554,22 @@ func handleWaitingForAttachmentPhase(ctx context.Context, r *VirtualMachineFileR
 func handleSSHConnectingPhase(ctx context.Context, r *VirtualMachineFileRestoreReconciler, vmfr *restorev1alpha1.VirtualMachineFileRestore) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Check timeout (issue #7): max 2 minutes (24 retries * 5 seconds)
-	const maxSSHWait = 24
-	if vmfr.Status.SSHRetries >= maxSSHWait {
+	// Check timeout (issue #7): max 2 minutes (maxSSHRetries * 5 seconds)
+	if getAnnotationInt32(vmfr, annotationSSHRetries) >= maxSSHRetries {
 		return failRestore(ctx, r, vmfr,
 			fmt.Errorf("SSH connection timeout"),
-			fmt.Sprintf("SSH connection failed after %d attempts (2 minutes)", maxSSHWait))
+			fmt.Sprintf("SSH connection failed after %d attempts (2 minutes)", maxSSHRetries))
 	}
 
-	// Rate limiting: ensure at least 5 seconds between SSH connection attempts
+	// Rate limiting: ensure at least retryBaseInterval between SSH connection attempts
 	// to prevent rapid reconciliation loops from external triggers
-	if vmfr.Status.LastSSHCheckTime != nil {
-		timeSinceLastCheck := time.Since(vmfr.Status.LastSSHCheckTime.Time)
-		if timeSinceLastCheck < 5*time.Second {
-			remainingWait := 5*time.Second - timeSinceLastCheck
+	if lastCheck := getAnnotationTime(vmfr, annotationLastSSHCheck); lastCheck != nil {
+		timeSinceLastCheck := time.Since(*lastCheck)
+		if timeSinceLastCheck < retryBaseInterval {
+			remainingWait := retryBaseInterval - timeSinceLastCheck
 			logger.Info("Rate limiting SSH check", "remainingWait", remainingWait)
 			return ctrl.Result{RequeueAfter: remainingWait}, nil
 		}
-	}
-
-	// Update last check timestamp before attempting SSH connection
-	now := metav1.Now()
-	patch := client.MergeFrom(vmfr.DeepCopy())
-	vmfr.Status.LastSSHCheckTime = &now
-	if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
-		logger.Error(err, "Failed to update last SSH check time")
-		return ctrl.Result{}, err
 	}
 
 	// Get VMI
@@ -604,20 +599,20 @@ func handleSSHConnectingPhase(ctx context.Context, r *VirtualMachineFileRestoreR
 	// Connect SSH with retry (issue #7)
 	sshClient, err := ConnectSSH(ip, privateKey)
 	if err != nil {
-		logger.Info("SSH connection failed, will retry", "ip", ip, "error", err, "attempt", vmfr.Status.SSHRetries+1)
-		return incrementRetryAndRequeue(ctx, r, vmfr, "ssh", 5*time.Second)
+		result, retryErr := incrementRetryAndRequeue(ctx, r, vmfr, "ssh", retryBaseInterval)
+		logger.Info("SSH connection failed, will retry", "ip", ip, "error", err, "attempt", getAnnotationInt32(vmfr, annotationSSHRetries))
+		return result, retryErr
 	}
 	defer sshClient.Close() //nolint:errcheck // Closing in defer is idiomatic
 
 	logger.Info("SSH connection established", "ip", ip)
 
-	// Reset SSH retry counter
-	if vmfr.Status.SSHRetries > 0 {
-		patch := client.MergeFrom(vmfr.DeepCopy())
-		vmfr.Status.SSHRetries = 0
-		if err := r.Status().Patch(ctx, vmfr, patch); err != nil {
-			logger.Error(err, "Failed to reset SSH retry counter")
-		}
+	// Clear SSH retry annotations (unconditional: timestamp is always set)
+	patch := client.MergeFrom(vmfr.DeepCopy())
+	delete(vmfr.Annotations, annotationSSHRetries)
+	delete(vmfr.Annotations, annotationLastSSHCheck)
+	if err := r.Patch(ctx, vmfr, patch); err != nil {
+		logger.Error(err, "Failed to clear SSH retry annotations")
 	}
 
 	// Detect OS and mount path (already set in Init, but re-detect for safety)
@@ -687,7 +682,7 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 
 	// Run command with timeout (issue #29)
 	// If rsync hangs (frozen filesystem, network stall, NFS deadlock), fail fast instead of waiting indefinitely
-	restoreCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	restoreCtx, cancel := context.WithTimeout(ctx, restoreTimeout)
 	defer cancel()
 	stdout, stderr, err := sshClient.RunCommand(restoreCtx, command)
 	if err != nil {
@@ -817,7 +812,7 @@ func handleCleanupPhase(ctx context.Context, r *VirtualMachineFileRestoreReconci
 		for _, volumeStatus := range vmi.Status.VolumeStatus {
 			if volumeStatus.Name == volumeName {
 				logger.Info("Volume still in VMI status, waiting for detachment", "volumeName", volumeName)
-				return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+				return ctrl.Result{RequeueAfter: retryBaseInterval}, nil
 			}
 		}
 	}
