@@ -17,10 +17,15 @@ limitations under the License.
 package controller
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"strconv"
 	"time"
 
+	"k8s.io/apimachinery/pkg/types"
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -66,4 +71,25 @@ func setAnnotationTime(vmfr *restorev1alpha1.VirtualMachineFileRestore, key stri
 		vmfr.Annotations = make(map[string]string)
 	}
 	vmfr.Annotations[key] = t.UTC().Format(time.RFC3339Nano)
+}
+
+// deleteAnnotations removes the given annotation keys from the object using an explicit
+// merge patch that sets each key to null. This is safe even when the keys being removed
+// are the object's only annotations: a MergeFrom diff of an empty map would emit
+// "annotations":{} and wipe all annotations, whereas explicit nulls only remove the
+// named keys and leave any concurrently-added annotations intact.
+func deleteAnnotations(ctx context.Context, c client.Client, obj client.Object, keys ...string) error {
+	nullKeys := make(map[string]any, len(keys))
+	for _, k := range keys {
+		nullKeys[k] = nil
+	}
+	patchBytes, err := json.Marshal(map[string]any{
+		"metadata": map[string]any{
+			"annotations": nullKeys,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal annotation delete patch: %w", err)
+	}
+	return c.Patch(ctx, obj, client.RawPatch(types.MergePatchType, patchBytes))
 }

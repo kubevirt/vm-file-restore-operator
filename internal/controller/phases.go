@@ -538,12 +538,10 @@ func handleWaitingForAttachmentPhase(ctx context.Context, r *VirtualMachineFileR
 
 	logger.Info("Volume attached and bound", "volumeName", volumeName, "target", volumeStatus.Target)
 
-	// Clear attachment retry annotations (unconditional: timestamp is always set)
-	patch := client.MergeFrom(vmfr.DeepCopy())
-	delete(vmfr.Annotations, annotationAttachmentRetries)
-	delete(vmfr.Annotations, annotationLastAttachmentCheck)
-	if err := r.Patch(ctx, vmfr, patch); err != nil {
-		logger.Error(err, "Failed to clear attachment retry annotations")
+	// Clear attachment retry annotations using explicit null-key patch so that concurrent
+	// annotations added by other writers are not overwritten.
+	if err := deleteAnnotations(ctx, r.Client, vmfr, annotationAttachmentRetries, annotationLastAttachmentCheck); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to clear attachment retry annotations: %w", err)
 	}
 
 	// Transition to SSHConnecting
@@ -607,12 +605,10 @@ func handleSSHConnectingPhase(ctx context.Context, r *VirtualMachineFileRestoreR
 
 	logger.Info("SSH connection established", "ip", ip)
 
-	// Clear SSH retry annotations (unconditional: timestamp is always set)
-	patch := client.MergeFrom(vmfr.DeepCopy())
-	delete(vmfr.Annotations, annotationSSHRetries)
-	delete(vmfr.Annotations, annotationLastSSHCheck)
-	if err := r.Patch(ctx, vmfr, patch); err != nil {
-		logger.Error(err, "Failed to clear SSH retry annotations")
+	// Clear SSH retry annotations using explicit null-key patch so that concurrent
+	// annotations added by other writers are not overwritten.
+	if err := deleteAnnotations(ctx, r.Client, vmfr, annotationSSHRetries, annotationLastSSHCheck); err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to clear SSH retry annotations: %w", err)
 	}
 
 	// Detect OS and mount path (already set in Init, but re-detect for safety)
