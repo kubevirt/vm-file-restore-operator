@@ -43,6 +43,23 @@ load 'test_helper'
     assert_output --partial "Only filerestore.sh commands are allowed"
 }
 
+@test "SSH: handles quoted mount-path with spaces" {
+    setup_device_mock "ext4"
+    local spaced_mnt="$BATS_TEST_TMPDIR/my mount"
+    mkdir -p "$spaced_mnt"
+    export SSH_ORIGINAL_COMMAND="/usr/local/bin/filerestore.sh restore --serial ABC123 --mount-path \"$spaced_mnt\""
+    run "$SCRIPT"
+    assert_success
+    assert_output --partial "Volume mounted at $spaced_mnt for manual restore"
+}
+
+@test "SSH: rejects malformed quoting in arguments" {
+    export SSH_ORIGINAL_COMMAND='/usr/local/bin/filerestore.sh restore --serial ABC123 --mount-path "/mnt/unfinished'
+    run "$SCRIPT"
+    assert_failure
+    assert_output --partial "Failed to parse SSH command arguments"
+}
+
 # =============================================================================
 # Argument parsing and validation
 # =============================================================================
@@ -281,6 +298,20 @@ load 'test_helper'
 # =============================================================================
 # Automatic mode
 # =============================================================================
+
+@test "auto: source path with shell metacharacters is not executed as a command" {
+    setup_device_mock "ext4"
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path '/home/data; rm -f /sentinel'
+    assert_failure
+    assert_output --partial "does not exist on the source volume"
+}
+
+@test "auto: source path with shell metacharacters triggers cleanup" {
+    setup_device_mock "ext4"
+    run "$SCRIPT" restore --serial ABC123 --mount-path "$TEST_MOUNT_DIR" --source-path '/home/data; rm -f /sentinel'
+    assert_failure
+    grep -q "^umount" "$MOCK_CALL_LOG"
+}
 
 @test "auto: source path not found exits 1" {
     setup_device_mock "ext4"

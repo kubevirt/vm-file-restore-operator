@@ -18,6 +18,24 @@ func TestBuildSSHCommand_LinuxManual(t *testing.T) {
 	assert.Equal(t, expected, command)
 }
 
+func TestBuildSSHCommand_LinuxPathWithSpaces(t *testing.T) {
+	command := BuildSSHCommand("linux", "test-restore", "/backup", "/home/my documents")
+	expected := "/usr/local/bin/filerestore.sh restore --serial test-restore --mount-path /backup --source-path '/home/my documents'"
+	assert.Equal(t, expected, command)
+}
+
+func TestBuildSSHCommand_LinuxPathWithEmbeddedDoubleQuotes(t *testing.T) {
+	command := BuildSSHCommand("linux", "test-restore", "/backup", `/home/my "documents"`)
+	expected := `/usr/local/bin/filerestore.sh restore --serial test-restore --mount-path /backup --source-path '/home/my "documents"'`
+	assert.Equal(t, expected, command)
+}
+
+func TestBuildSSHCommand_LinuxPathWithSingleQuote(t *testing.T) {
+	command := BuildSSHCommand("linux", "test-restore", "/backup", "/home/user's data")
+	expected := `/usr/local/bin/filerestore.sh restore --serial test-restore --mount-path /backup --source-path '/home/user'\''s data'`
+	assert.Equal(t, expected, command)
+}
+
 func TestBuildSSHCommand_WindowsAutomatic(t *testing.T) {
 	command := BuildSSHCommand("windows", "test-restore", "C:\\backup", "C:\\Users\\data")
 	expected := `"C:\Program Files\filerestore\filerestore.bat" restore --serial test-restore --mount-path "C:\backup" --source-path "C:\Users\data"`
@@ -45,6 +63,12 @@ func TestBuildSSHCommand_WindowsManual(t *testing.T) {
 func TestBuildCleanupCommand_Linux(t *testing.T) {
 	command := BuildCleanupCommand("linux", "/backup")
 	expected := "/usr/local/bin/filerestore.sh cleanup --mount-path /backup"
+	assert.Equal(t, expected, command)
+}
+
+func TestBuildCleanupCommand_LinuxPathWithSpaces(t *testing.T) {
+	command := BuildCleanupCommand("linux", "/mnt/my backup")
+	expected := "/usr/local/bin/filerestore.sh cleanup --mount-path '/mnt/my backup'"
 	assert.Equal(t, expected, command)
 }
 

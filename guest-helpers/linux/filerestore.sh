@@ -26,11 +26,22 @@ if [ -n "$SSH_ORIGINAL_COMMAND" ]; then
         log_err "Only filerestore.sh commands are allowed"
         exit 1
     fi
-    # Extract arguments from SSH_ORIGINAL_COMMAND
-    # Split on whitespace (no eval — avoids shell injection).
-    # Note: arguments containing spaces or quotes are not supported via SSH.
-    read -ra _args <<< "${SSH_ORIGINAL_COMMAND#/usr/local/bin/filerestore.sh}" || true
-    set -- "${_args[@]}"
+    # Extract arguments from SSH_ORIGINAL_COMMAND.
+    # xargs parses shell-like quoting (double/single quotes, backslash) without eval,
+    # so paths with spaces passed as --source-path "/home/my dir" are handled correctly.
+    # Capture to a variable first so we can detect xargs failures (e.g. unmatched quotes)
+    # before accepting any arguments — a failed parse must not trigger a partial operation.
+    _ssh_args_raw=$(printf '%s' "${SSH_ORIGINAL_COMMAND#/usr/local/bin/filerestore.sh}" | xargs printf '%s\n') || {
+        log_err "Failed to parse SSH command arguments: malformed quoting"
+        exit 1
+    }
+    if [ -n "$_ssh_args_raw" ]; then
+        mapfile -t _args <<< "$_ssh_args_raw"
+        # mapfile via herestring adds a trailing empty element; remove it
+        [ -z "${_args[-1]:-}" ] && unset '_args[-1]'
+        set -- "${_args[@]}"
+    fi
+    unset _ssh_args_raw _args
     unset SSH_ORIGINAL_COMMAND  # Clear to prevent loops
 fi
 
@@ -354,6 +365,7 @@ case "$SOURCE_PATH" in
         exit 1
         ;;
 esac
+
 
 # --- For multi-LV, find which sub-mount contains the source path ---
 if [ "$FSTYPE" = "LVM2_member" ] && [ "$MOUNTABLE_COUNT" -gt 1 ]; then

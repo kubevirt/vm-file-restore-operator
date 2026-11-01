@@ -1294,7 +1294,7 @@ umount /mnt/lvmdata
 
 				By("verifying the unsafe restore request fails")
 				restore := waitForRestoreFailed(env.CRClient, env.Namespace, restoreName, 10*time.Minute)
-				assertErrorMessageContains(restore, "Unknown argument:")
+				assertErrorMessageContains(restore, "does not exist on the source volume")
 
 				By("verifying the injected command did not remove the sentinel file")
 				_, err = runSSHCommand(vmName, env.Namespace,
