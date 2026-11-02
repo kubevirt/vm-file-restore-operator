@@ -293,7 +293,7 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	$(KUSTOMIZE) build config/default > dist/install.yaml
 
 .PHONY: csv-generator
-csv-generator: ## Build csv-generator binary locally
+csv-generator: csv-assets ## Build csv-generator binary locally (assets are go:embedded, so must be fresh first)
 	go build -o bin/csv-generator ./tools/csv-generator/
 
 .PHONY: csv-assets
