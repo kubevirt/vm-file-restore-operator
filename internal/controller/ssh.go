@@ -119,6 +119,21 @@ func (c *SSHClient) Close() error {
 	return c.client.Close()
 }
 
+// quoteLinuxPath wraps a path in single quotes only when it contains characters
+// that xargs treats as special (whitespace, quotes, backslash).
+// Paths without such characters are returned unquoted for compatibility with
+// guest helpers that pre-date quoted-argument support.
+// Single-quote encoding is used because xargs does not reliably handle \"
+// or \\ inside double-quoted strings on all GNU xargs versions. Inside single
+// quotes every character is literal; ' itself is escaped by ending the quoted
+// segment, emitting \', and reopening.
+func quoteLinuxPath(path string) string {
+	if !strings.ContainsAny(path, " \t\n\"'\\") {
+		return path
+	}
+	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
+}
+
 // BuildSSHCommand constructs the restore command to execute on the guest VM.
 // If sourcePath is empty, manual mode is assumed (no automatic restore).
 // Panics if volumeName or mountPath are empty (caller error).
@@ -150,10 +165,10 @@ func BuildSSHCommand(osType, volumeName, mountPath, sourcePath string) string {
 		// Linux: script handles sudo internally (see filerestore.sh)
 		if sourcePath != "" {
 			cmd = fmt.Sprintf(`%s restore --serial %s --mount-path %s --source-path %s`,
-				scriptPath, volumeName, mountPath, sourcePath)
+				scriptPath, volumeName, quoteLinuxPath(mountPath), quoteLinuxPath(sourcePath))
 		} else {
 			cmd = fmt.Sprintf(`%s restore --serial %s --mount-path %s`,
-				scriptPath, volumeName, mountPath)
+				scriptPath, volumeName, quoteLinuxPath(mountPath))
 		}
 	}
 
@@ -175,7 +190,7 @@ func BuildCleanupCommand(osType, mountPath string) string {
 		cmd = fmt.Sprintf(`%s cleanup --mount-path "%s"`, scriptPath, mountPath)
 	} else {
 		// Linux: script handles sudo internally (see filerestore.sh)
-		cmd = fmt.Sprintf(`%s cleanup --mount-path %s`, scriptPath, mountPath)
+		cmd = fmt.Sprintf(`%s cleanup --mount-path %s`, scriptPath, quoteLinuxPath(mountPath))
 	}
 
 	return cmd
