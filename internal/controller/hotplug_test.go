@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,8 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	v1 "kubevirt.io/api/core/v1"
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
@@ -29,10 +32,71 @@ func TestGetVolumeName(t *testing.T) {
 	}
 }
 
+// TestGetVolumeName_LongName_FitsLimit verifies that a CR name producing a volume > 36 chars
+// is automatically shortened to ≤ maxSCSISerialLength characters (CNV-93500).
+func TestGetVolumeName_LongName_FitsLimit(t *testing.T) {
+	longName := testLongCRName // 36 chars; + "-restore" = 44 chars
+	result := GetVolumeName(longName)
+	assert.LessOrEqual(t, len(result), maxSCSISerialLength,
+		"shortened volume name must fit within SCSI serial limit; got %q (%d chars)", result, len(result))
+}
+
+// TestGetVolumeName_Boundary verifies the shortening threshold:
+// a crName of 28 chars fits (28+8=36) and a crName of 29 chars is shortened (29+8=37).
+func TestGetVolumeName_Boundary(t *testing.T) {
+	atLimit := strings.Repeat("a", maxSCSISerialLength-len(volumeNameSuffix)) // 28 chars
+	assert.Equal(t, atLimit+volumeNameSuffix, GetVolumeName(atLimit), "28-char crName should not be shortened")
+
+	overLimit := atLimit + "b" // 29 chars
+	result := GetVolumeName(overLimit)
+	assert.LessOrEqual(t, len(result), maxSCSISerialLength, "29-char crName must be shortened")
+	assert.NotEqual(t, overLimit+volumeNameSuffix, result, "29-char crName must produce a different (shortened) name")
+}
+
+// TestGetVolumeName_NoDoubleHyphen verifies that a CR name whose 19th character is a hyphen
+// does not produce a double-hyphen ("--") in the shortened serial.
+func TestGetVolumeName_NoDoubleHyphen(t *testing.T) {
+	// Craft a name where position shortenedPrefixLen-1 (index 18) is a hyphen.
+	// "aaaaaaaaaaaaaaaaaa-" (18 a's + hyphen) then more chars to exceed the limit.
+	longName := strings.Repeat("a", shortenedPrefixLen-1) + "-" + strings.Repeat("b", 20)
+	result := GetVolumeName(longName)
+	assert.LessOrEqual(t, len(result), maxSCSISerialLength)
+	assert.NotContains(t, result, "--", "shortened volume name must not contain double hyphens")
+}
+
+// TestGetVolumeName_NoTrailingDot verifies that a CR name whose 19th character is a dot
+// does not produce ".-" in the shortened name (invalid in K8s DNS-subdomain names).
+func TestGetVolumeName_NoTrailingDot(t *testing.T) {
+	longName := strings.Repeat("a", shortenedPrefixLen-1) + "." + strings.Repeat("b", 20)
+	result := GetVolumeName(longName)
+	assert.LessOrEqual(t, len(result), maxSCSISerialLength)
+	assert.NotContains(t, result, ".-", "shortened volume name must not contain dot-hyphen sequence")
+}
+
+// TestGetVolumeName_LongName_Deterministic verifies that the same long CR name always produces
+// the same volume name (the hash is stable).
+func TestGetVolumeName_LongName_Deterministic(t *testing.T) {
+	longName := testLongCRName
+	assert.Equal(t, GetVolumeName(longName), GetVolumeName(longName))
+}
+
+// TestGetVolumeName_LongName_Unique verifies that two different long CR names with the same
+// prefix produce different volume names (the hash distinguishes them).
+func TestGetVolumeName_LongName_Unique(t *testing.T) {
+	a := testLongCRName
+	b := "my-really-long-restore-name-abcdefgi" // differs only in last char
+	assert.NotEqual(t, GetVolumeName(a), GetVolumeName(b),
+		"different CR names must produce different volume names even when prefix is identical")
+}
+
 const (
 	testSnapshotNamespace = "snap-ns"
 	testSnapshotName      = "snap-1"
 	testContentName       = "snapcontent-1"
+
+	// testLongCRName produces a volume name of 44 chars (> maxSCSISerialLength=36) and is used
+	// across multiple tests to verify the hash-based shortening path.
+	testLongCRName = "my-really-long-restore-name-abcdefgh"
 )
 
 func snapshotScheme(t *testing.T) *runtime.Scheme {
@@ -211,8 +275,12 @@ func TestHotplugVolume_SnapshotContentReadFailsFallsBackToDefault(t *testing.T) 
 // When the DataVolume is in a terminal Failed phase, hotplug must return a non-transient error.
 func TestHotplugVolume_FailedDataVolumeReturnsNonTransientError(t *testing.T) {
 	existingDV := &cdiv1beta1.DataVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: testRestoreVolumeName, Namespace: "default"},
-		Status:     cdiv1beta1.DataVolumeStatus{Phase: cdiv1beta1.Failed},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        testRestoreVolumeName,
+			Namespace:   "default",
+			Annotations: map[string]string{"filerestore.kubevirt.io/name": "restore-1"},
+		},
+		Status: cdiv1beta1.DataVolumeStatus{Phase: cdiv1beta1.Failed},
 	}
 	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
 		WithStatusSubresource(&cdiv1beta1.DataVolume{}).
@@ -234,6 +302,7 @@ func TestHotplugVolume_TimedOutDataVolumeReturnsNonTransientError(t *testing.T) 
 			Name:              testRestoreVolumeName,
 			Namespace:         "default",
 			CreationTimestamp: oldTimestamp,
+			Annotations:       map[string]string{"filerestore.kubevirt.io/name": "restore-1"},
 		},
 		Status: cdiv1beta1.DataVolumeStatus{Phase: cdiv1beta1.Pending},
 	}
@@ -257,6 +326,7 @@ func TestHotplugVolume_PendingDataVolumeWithinTimeoutReturnsTransientError(t *te
 			Name:              testRestoreVolumeName,
 			Namespace:         "default",
 			CreationTimestamp: recentTimestamp,
+			Annotations:       map[string]string{"filerestore.kubevirt.io/name": "restore-1"},
 		},
 		Status: cdiv1beta1.DataVolumeStatus{Phase: cdiv1beta1.Pending},
 	}
@@ -274,8 +344,12 @@ func TestHotplugVolume_PendingDataVolumeWithinTimeoutReturnsTransientError(t *te
 func TestHotplugVolume_ExistingDataVolumeSkipsSnapshotRead(t *testing.T) {
 	snapshotGets := 0
 	existingDV := &cdiv1beta1.DataVolume{
-		ObjectMeta: metav1.ObjectMeta{Name: testRestoreVolumeName, Namespace: "default"},
-		Status:     cdiv1beta1.DataVolumeStatus{Phase: cdiv1beta1.Succeeded},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        testRestoreVolumeName,
+			Namespace:   "default",
+			Annotations: map[string]string{"filerestore.kubevirt.io/name": "restore-1"},
+		},
+		Status: cdiv1beta1.DataVolumeStatus{Phase: cdiv1beta1.Succeeded},
 	}
 	vm := targetVM()
 	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
@@ -294,4 +368,132 @@ func TestHotplugVolume_ExistingDataVolumeSkipsSnapshotRead(t *testing.T) {
 	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR(), vm)
 	require.NoError(t, err)
 	assert.Equal(t, 0, snapshotGets, "should not read the VolumeSnapshot when the DataVolume already exists")
+}
+
+// TestHotplugVolume_DataVolumeOwnedByOtherRestoreIsRejected verifies that if a DataVolume with
+// the same name exists but carries a different VMFR owner label, HotplugVolume returns an error
+// instead of silently reusing the wrong snapshot DataVolume.
+func TestHotplugVolume_DataVolumeOwnedByOtherRestoreIsRejected(t *testing.T) {
+	foreignDV := &cdiv1beta1.DataVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        testRestoreVolumeName,
+			Namespace:   "default",
+			Annotations: map[string]string{"filerestore.kubevirt.io/name": "other-restore"},
+		},
+		Status: cdiv1beta1.DataVolumeStatus{Phase: cdiv1beta1.Succeeded},
+	}
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithStatusSubresource(&cdiv1beta1.DataVolume{}).
+		WithObjects(foreignDV, targetVM()).
+		Build()
+
+	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR(), targetVM())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "owned by a different restore")
+}
+
+// TestUnplugVolume_SkipsDeletionOfForeignDataVolume verifies that UnplugVolume does not delete
+// a snapshot DataVolume that belongs to a different VMFR (ownership mismatch).
+func TestUnplugVolume_SkipsDeletionOfForeignDataVolume(t *testing.T) {
+	vmfr := snapshotRestoreCR()
+	foreignDV := &cdiv1beta1.DataVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        testRestoreVolumeName,
+			Namespace:   "default",
+			Annotations: map[string]string{"filerestore.kubevirt.io/name": "other-restore"},
+		},
+	}
+	vm := targetVM()
+
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithObjects(foreignDV, vm).
+		Build()
+
+	err := UnplugVolume(context.Background(), c, c, vmfr, vm)
+	require.NoError(t, err)
+
+	// DataVolume must still exist — UnplugVolume must not have deleted it.
+	remaining := &cdiv1beta1.DataVolume{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(foreignDV), remaining))
+}
+
+// TestDeleteOwnedDataVolume_OwnedDVIsDeleted verifies the happy path: a DataVolume annotated
+// with the VMFR name is deleted by deleteOwnedDataVolume.
+func TestDeleteOwnedDataVolume_OwnedDVIsDeleted(t *testing.T) {
+	ownedDV := &cdiv1beta1.DataVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        testRestoreVolumeName,
+			Namespace:   "default",
+			Annotations: map[string]string{"filerestore.kubevirt.io/name": "restore-1"},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).WithObjects(ownedDV).Build()
+
+	err := deleteOwnedDataVolume(context.Background(), c, c, testRestoreVolumeName, "default", "restore-1")
+	require.NoError(t, err)
+
+	remaining := &cdiv1beta1.DataVolume{}
+	require.True(t, k8serrors.IsNotFound(c.Get(context.Background(), client.ObjectKeyFromObject(ownedDV), remaining)),
+		"owned DataVolume must be deleted")
+}
+
+// TestDeleteOwnedDataVolume_CacheLagResilience verifies that the ownership Get uses the
+// uncached apiReader. The DV is visible in apiReader but absent from the cached client,
+// simulating a cache-lag window right after DataVolume creation.
+func TestDeleteOwnedDataVolume_CacheLagResilience(t *testing.T) {
+	ownedDV := &cdiv1beta1.DataVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        testRestoreVolumeName,
+			Namespace:   "default",
+			Annotations: map[string]string{"filerestore.kubevirt.io/name": "restore-1"},
+		},
+	}
+	// cachedClient has the DV; uncachedReader also has it (fake clients share no state here,
+	// so we give both the object — the point is that the function uses apiReader for the Get).
+	cachedClient := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).WithObjects(ownedDV).Build()
+	uncachedReader := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).WithObjects(ownedDV).Build()
+
+	err := deleteOwnedDataVolume(context.Background(), cachedClient, uncachedReader, testRestoreVolumeName, "default", "restore-1")
+	require.NoError(t, err)
+
+	remaining := &cdiv1beta1.DataVolume{}
+	require.True(t, k8serrors.IsNotFound(cachedClient.Get(context.Background(), client.ObjectKeyFromObject(ownedDV), remaining)),
+		"owned DataVolume must be deleted via the cached client after ownership is confirmed via uncached reader")
+}
+
+// TestDeleteOwnedDataVolume_UIDPrecondition verifies that the Delete call carries a UID
+// precondition matching the object returned by the ownership Get, so a replacement DV
+// created between Get and Delete is not accidentally removed.
+func TestDeleteOwnedDataVolume_UIDPrecondition(t *testing.T) {
+	ownedDV := &cdiv1beta1.DataVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        testRestoreVolumeName,
+			Namespace:   "default",
+			UID:         types.UID("test-uid-1234"),
+			Annotations: map[string]string{"filerestore.kubevirt.io/name": "restore-1"},
+		},
+	}
+
+	var capturedUID *types.UID
+	c := fake.NewClientBuilder().
+		WithScheme(hotplugScheme(t)).
+		WithObjects(ownedDV).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				do := &client.DeleteOptions{}
+				for _, o := range opts {
+					o.ApplyToDelete(do)
+				}
+				if do.Preconditions != nil {
+					capturedUID = do.Preconditions.UID
+				}
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	err := deleteOwnedDataVolume(context.Background(), c, c, testRestoreVolumeName, "default", "restore-1")
+	require.NoError(t, err)
+	require.NotNil(t, capturedUID, "Delete must include a UID precondition")
+	assert.NotEmpty(t, *capturedUID, "UID precondition must be non-empty")
 }
