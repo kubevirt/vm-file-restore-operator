@@ -438,8 +438,9 @@ func TestDeleteOwnedDataVolume_OwnedDVIsDeleted(t *testing.T) {
 }
 
 // TestDeleteOwnedDataVolume_CacheLagResilience verifies that the ownership Get uses the
-// uncached apiReader. The DV is visible in apiReader but absent from the cached client,
-// simulating a cache-lag window right after DataVolume creation.
+// uncached apiReader and not the cached client. An interceptor on the cached client records
+// any Get calls for the DV name; we assert none occur during deleteOwnedDataVolume so the
+// test fails if the implementation regresses to using the cached client for the lookup.
 func TestDeleteOwnedDataVolume_CacheLagResilience(t *testing.T) {
 	ownedDV := &cdiv1beta1.DataVolume{
 		ObjectMeta: metav1.ObjectMeta{
@@ -448,13 +449,26 @@ func TestDeleteOwnedDataVolume_CacheLagResilience(t *testing.T) {
 			Annotations: map[string]string{"filerestore.kubevirt.io/name": "restore-1"},
 		},
 	}
-	// cachedClient has the DV; uncachedReader also has it (fake clients share no state here,
-	// so we give both the object — the point is that the function uses apiReader for the Get).
-	cachedClient := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).WithObjects(ownedDV).Build()
+
+	var cachedGetCalled bool
+	cachedClient := fake.NewClientBuilder().
+		WithScheme(hotplugScheme(t)).
+		WithObjects(ownedDV).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if key.Name == testRestoreVolumeName {
+					cachedGetCalled = true
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
 	uncachedReader := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).WithObjects(ownedDV).Build()
 
 	err := deleteOwnedDataVolume(context.Background(), cachedClient, uncachedReader, testRestoreVolumeName, "default", "restore-1")
 	require.NoError(t, err)
+
+	assert.False(t, cachedGetCalled, "ownership Get must use the uncached apiReader, not the cached client")
 
 	remaining := &cdiv1beta1.DataVolume{}
 	require.True(t, k8serrors.IsNotFound(cachedClient.Get(context.Background(), client.ObjectKeyFromObject(ownedDV), remaining)),
