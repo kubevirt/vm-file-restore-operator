@@ -31,8 +31,11 @@ import (
 const (
 	annotationAttachmentRetries   = "vmfr.kubevirt.io/attachment-retries"
 	annotationSSHRetries          = "vmfr.kubevirt.io/ssh-retries"
+	annotationCleanupRetries      = "vmfr.kubevirt.io/cleanup-retries"
 	annotationLastAttachmentCheck = "vmfr.kubevirt.io/last-attachment-check"
 	annotationLastSSHCheck        = "vmfr.kubevirt.io/last-ssh-check"
+	annotationLastCleanupCheck    = "vmfr.kubevirt.io/last-cleanup-check"
+	annotationCleanupDetachStart  = "vmfr.kubevirt.io/cleanup-detach-start"
 )
 
 func getAnnotationInt32(vmfr *restorev1alpha1.VirtualMachineFileRestore, key string) int32 {
@@ -55,12 +58,16 @@ func setAnnotationInt32(vmfr *restorev1alpha1.VirtualMachineFileRestore, key str
 }
 
 func getAnnotationTime(vmfr *restorev1alpha1.VirtualMachineFileRestore, key string) *time.Time {
+	return getAnnotationTimeAt(vmfr, key, time.Now())
+}
+
+func getAnnotationTimeAt(vmfr *restorev1alpha1.VirtualMachineFileRestore, key string, now time.Time) *time.Time {
 	v, ok := vmfr.Annotations[key]
 	if !ok {
 		return nil
 	}
 	t, err := time.Parse(time.RFC3339Nano, v)
-	if err != nil || t.After(time.Now()) {
+	if err != nil || t.After(now) {
 		return nil
 	}
 	return &t
