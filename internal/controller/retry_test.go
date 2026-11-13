@@ -46,7 +46,7 @@ func TestIncrementRetryAndRequeue(t *testing.T) {
 		}
 		r := newRetryReconciler(scheme, vmfr)
 
-		result, err := incrementRetryAndRequeue(ctx, r, vmfr, "attachment", retryBaseInterval)
+		result, err := incrementRetryAndRequeue(ctx, r, vmfr, attachmentRetryType, retryBaseInterval)
 		require.NoError(t, err)
 		assert.True(t, result.RequeueAfter > 0)
 
@@ -67,13 +67,62 @@ func TestIncrementRetryAndRequeue(t *testing.T) {
 		}
 		r := newRetryReconciler(scheme, vmfr)
 
-		_, err := incrementRetryAndRequeue(ctx, r, vmfr, "ssh", retryBaseInterval)
+		_, err := incrementRetryAndRequeue(ctx, r, vmfr, sshRetryType, retryBaseInterval)
 		require.NoError(t, err)
 
 		fetched := &restorev1alpha1.VirtualMachineFileRestore{}
 		require.NoError(t, r.Get(ctx, client.ObjectKeyFromObject(vmfr), fetched))
 		assert.Equal(t, int32(1), getAnnotationInt32(fetched, annotationSSHRetries))
 		assert.NotEmpty(t, fetched.Annotations[annotationLastSSHCheck])
+	})
+
+	t.Run("increments cleanup counter and sets timestamp", func(t *testing.T) {
+		vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "r-cleanup", Namespace: "ns"},
+		}
+		r := newRetryReconciler(scheme, vmfr)
+
+		_, err := incrementRetryAndRequeue(ctx, r, vmfr, cleanupRetryType, retryBaseInterval)
+		require.NoError(t, err)
+
+		fetched := &restorev1alpha1.VirtualMachineFileRestore{}
+		require.NoError(t, r.Get(ctx, client.ObjectKeyFromObject(vmfr), fetched))
+		assert.Equal(t, int32(1), getAnnotationInt32(fetched, annotationCleanupRetries))
+		assert.NotEmpty(t, fetched.Annotations[annotationLastCleanupCheck])
+		assert.NotEmpty(t, fetched.Annotations[annotationCleanupDetachStart])
+	})
+
+	t.Run("caps cleanup requeue at the remaining detachment deadline", func(t *testing.T) {
+		now := time.Date(2026, time.November, 8, 16, 0, 0, 0, time.UTC)
+		vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "r-cleanup-deadline",
+				Namespace: "ns",
+				Annotations: map[string]string{
+					annotationCleanupDetachStart: now.Add(-cleanupDetachTimeout + 100*time.Millisecond).Format(time.RFC3339Nano),
+				},
+			},
+		}
+
+		assert.Equal(t, 100*time.Millisecond, cleanupRequeueDelay(vmfr, now, retryBaseInterval))
+	})
+
+	t.Run("preserves cleanup detachment start time across retries", func(t *testing.T) {
+		vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+			ObjectMeta: metav1.ObjectMeta{Name: "r-cleanup-start", Namespace: "ns"},
+		}
+		r := newRetryReconciler(scheme, vmfr)
+
+		_, err := incrementRetryAndRequeue(ctx, r, vmfr, cleanupRetryType, retryBaseInterval)
+		require.NoError(t, err)
+		fetched := &restorev1alpha1.VirtualMachineFileRestore{}
+		require.NoError(t, r.Get(ctx, client.ObjectKeyFromObject(vmfr), fetched))
+		start := fetched.Annotations[annotationCleanupDetachStart]
+
+		_, err = incrementRetryAndRequeue(ctx, r, fetched, cleanupRetryType, retryBaseInterval)
+		require.NoError(t, err)
+		require.NoError(t, r.Get(ctx, client.ObjectKeyFromObject(vmfr), fetched))
+		assert.Equal(t, start, fetched.Annotations[annotationCleanupDetachStart])
 	})
 
 	t.Run("accumulates counter across multiple calls", func(t *testing.T) {
@@ -85,7 +134,7 @@ func TestIncrementRetryAndRequeue(t *testing.T) {
 		for i := 1; i <= 3; i++ {
 			// Re-fetch before each call so the patch base is current
 			require.NoError(t, r.Get(ctx, client.ObjectKeyFromObject(vmfr), vmfr))
-			_, err := incrementRetryAndRequeue(ctx, r, vmfr, "attachment", retryBaseInterval)
+			_, err := incrementRetryAndRequeue(ctx, r, vmfr, attachmentRetryType, retryBaseInterval)
 			require.NoError(t, err)
 		}
 
@@ -100,7 +149,7 @@ func TestIncrementRetryAndRequeue(t *testing.T) {
 		}
 		r := newRetryReconciler(scheme, vmfr)
 
-		_, err := incrementRetryAndRequeue(ctx, r, vmfr, "bogus", retryBaseInterval)
+		_, err := incrementRetryAndRequeue(ctx, r, vmfr, retryType("bogus"), retryBaseInterval)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unknown retryType")
 

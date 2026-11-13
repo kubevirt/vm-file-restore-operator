@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -182,6 +184,159 @@ func TestPreserveRestoredFilesCount(t *testing.T) {
 		assert.Contains(t, err.Error(), "preserveRestoredFilesCount")
 		assert.Nil(t, vmfr.Status.RestoredFilesCount)
 	})
+}
+
+func TestHandleCleanupPhase_SucceedsWithWarningWhenVolumeDetachmentTimesOut(t *testing.T) {
+	// When the VMI still reports the volume after the timeout, the restore succeeds
+	// with a Warning event rather than failing, since files were already restored.
+	scheme := runtime.NewScheme()
+	require.NoError(t, restorev1alpha1.AddToScheme(scheme))
+	require.NoError(t, v1.AddToScheme(scheme))
+	ctx := context.Background()
+
+	vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "restore-timeout",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				"vmfr.kubevirt.io/cleanup-retries":      "3",
+				annotationLastCleanupCheck:              time.Now().UTC().Format(time.RFC3339Nano),
+				"vmfr.kubevirt.io/cleanup-detach-start": time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano),
+			},
+		},
+		Spec: restorev1alpha1.VirtualMachineFileRestoreSpec{
+			Target: corev1.TypedLocalObjectReference{Name: "target-vm"},
+			Source: restorev1alpha1.RestoreSource{
+				PVC: &restorev1alpha1.PVCSource{Name: "backup-pvc"},
+			},
+		},
+		Status: restorev1alpha1.VirtualMachineFileRestoreStatus{
+			Phase: restorev1alpha1.RestorePhaseCleanup,
+		},
+	}
+	volumeName := GetVolumeName(vmfr.Name)
+	vm := &v1.VirtualMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: "target-vm", Namespace: "test-ns"},
+		Spec: v1.VirtualMachineSpec{Template: &v1.VirtualMachineInstanceTemplateSpec{
+			Spec: v1.VirtualMachineInstanceSpec{
+				Volumes: []v1.Volume{{Name: volumeName}},
+				Domain:  v1.DomainSpec{Devices: v1.Devices{Disks: []v1.Disk{{Name: volumeName}}}},
+			},
+		}},
+	}
+	vmi := &v1.VirtualMachineInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "target-vm", Namespace: "test-ns"},
+		Status:     v1.VirtualMachineInstanceStatus{VolumeStatus: []v1.VolumeStatus{{Name: volumeName}}},
+	}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&restorev1alpha1.VirtualMachineFileRestore{}).
+		WithObjects(vmfr, vm, vmi).
+		Build()
+	fakeRecorder := record.NewFakeRecorder(10)
+	reconciler := &VirtualMachineFileRestoreReconciler{
+		Client:    k8sClient,
+		APIReader: k8sClient,
+		Recorder:  fakeRecorder,
+	}
+
+	result, err := handleCleanupPhase(ctx, reconciler, vmfr)
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+
+	updated := &restorev1alpha1.VirtualMachineFileRestore{}
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(vmfr), updated))
+	assert.Equal(t, restorev1alpha1.RestorePhaseSucceeded, updated.Status.Phase)
+	assert.Empty(t, updated.Status.ErrorMessage)
+	require.Len(t, updated.Status.Conditions, 1)
+	assert.Equal(t, "CleanupVerificationTimedOut", updated.Status.Conditions[0].Reason)
+	assert.Equal(t, metav1.ConditionTrue, updated.Status.Conditions[0].Status)
+
+	close(fakeRecorder.Events)
+	events := make([]string, 0, len(fakeRecorder.Events))
+	for e := range fakeRecorder.Events {
+		events = append(events, e)
+	}
+	assert.Contains(t, events, "Warning CleanupVerificationTimedOut Files restored successfully, but volume detachment could not be verified after 1m0s.")
+}
+
+func TestHandleCleanupPhase_RateLimitsBeforeDetachmentDeadline(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, restorev1alpha1.AddToScheme(scheme))
+	ctx := context.Background()
+
+	vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "restore-rate-limited",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				annotationLastCleanupCheck:   time.Now().UTC().Format(time.RFC3339Nano),
+				annotationCleanupDetachStart: time.Now().UTC().Format(time.RFC3339Nano),
+			},
+		},
+		Status: restorev1alpha1.VirtualMachineFileRestoreStatus{Phase: restorev1alpha1.RestorePhaseCleanup},
+	}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&restorev1alpha1.VirtualMachineFileRestore{}).
+		WithObjects(vmfr).
+		Build()
+	reconciler := &VirtualMachineFileRestoreReconciler{Client: k8sClient, APIReader: k8sClient, Recorder: &record.FakeRecorder{}}
+
+	result, err := handleCleanupPhase(ctx, reconciler, vmfr)
+	require.NoError(t, err)
+	assert.Positive(t, result.RequeueAfter)
+	assert.LessOrEqual(t, result.RequeueAfter, retryBaseInterval)
+
+	updated := &restorev1alpha1.VirtualMachineFileRestore{}
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(vmfr), updated))
+	assert.Zero(t, getAnnotationInt32(updated, annotationCleanupRetries))
+}
+
+func TestHandleCleanupPhase_SucceedsWhenVolumeDetachedAtTimeout(t *testing.T) {
+	// A completed detachment takes precedence over an elapsed verification deadline.
+	scheme := runtime.NewScheme()
+	require.NoError(t, restorev1alpha1.AddToScheme(scheme))
+	require.NoError(t, v1.AddToScheme(scheme))
+	ctx := context.Background()
+
+	vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "restore-detached",
+			Namespace: "test-ns",
+			Annotations: map[string]string{
+				annotationCleanupRetries:     "12",
+				annotationLastCleanupCheck:   time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano),
+				annotationCleanupDetachStart: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano),
+			},
+		},
+		Spec: restorev1alpha1.VirtualMachineFileRestoreSpec{
+			Target: corev1.TypedLocalObjectReference{Name: "target-vm"},
+			Source: restorev1alpha1.RestoreSource{PVC: &restorev1alpha1.PVCSource{Name: "backup-pvc"}},
+		},
+		Status: restorev1alpha1.VirtualMachineFileRestoreStatus{Phase: restorev1alpha1.RestorePhaseCleanup},
+	}
+	vm := &v1.VirtualMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: "target-vm", Namespace: "test-ns"},
+		Spec:       v1.VirtualMachineSpec{Template: &v1.VirtualMachineInstanceTemplateSpec{}},
+	}
+	vmi := &v1.VirtualMachineInstance{ObjectMeta: metav1.ObjectMeta{Name: "target-vm", Namespace: "test-ns"}}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&restorev1alpha1.VirtualMachineFileRestore{}).
+		WithObjects(vmfr, vm, vmi).
+		Build()
+	reconciler := &VirtualMachineFileRestoreReconciler{Client: k8sClient, APIReader: k8sClient, Recorder: &record.FakeRecorder{}}
+
+	_, err := handleCleanupPhase(ctx, reconciler, vmfr)
+	require.NoError(t, err)
+
+	updated := &restorev1alpha1.VirtualMachineFileRestore{}
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(vmfr), updated))
+	assert.Equal(t, restorev1alpha1.RestorePhaseSucceeded, updated.Status.Phase)
+	assert.NotContains(t, updated.Annotations, annotationCleanupRetries)
+	assert.NotContains(t, updated.Annotations, annotationLastCleanupCheck)
+	assert.NotContains(t, updated.Annotations, annotationCleanupDetachStart)
 }
 
 func TestSkipRestoringIfPhaseAdvanced(t *testing.T) {
