@@ -837,7 +837,7 @@ func handleCleanupPhase(ctx context.Context, r *VirtualMachineFileRestoreReconci
 	}
 
 	// Unplug volume
-	if err := UnplugVolume(ctx, r.Client, vmfr, vm); err != nil {
+	if err := UnplugVolume(ctx, r.Client, r.APIReader, vmfr, vm); err != nil {
 		return failRestore(ctx, r, vmfr, err, "failed to unplug volume from VM")
 	}
 

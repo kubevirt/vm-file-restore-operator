@@ -208,7 +208,7 @@ func (r *VirtualMachineFileRestoreReconciler) cleanup(ctx context.Context, vmfr 
 		Namespace: vmfr.Namespace,
 	}, vm)
 	if err == nil {
-		_ = UnplugVolume(ctx, r.Client, vmfr, vm)
+		_ = UnplugVolume(ctx, r.Client, r.APIReader, vmfr, vm)
 	}
 
 	return nil
