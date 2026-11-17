@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -19,13 +21,31 @@ import (
 )
 
 // GetVolumeName returns the volume name for a given restore CR name.
-// The volume name is used as the volume name, disk name, and serial number for guest OS detection.
+// The volume name is used as the volume and disk name; GetDiskSerial derives its guest-detection serial.
 // Panics if crName is empty (caller error - should never happen with valid K8s objects).
 func GetVolumeName(crName string) string {
 	if crName == "" {
 		panic("GetVolumeName called with empty crName")
 	}
 	return crName + "-restore"
+}
+
+const (
+	maxSCSIDiskSerialLength = 36
+	hashedSerialHexLength   = 12
+	readableSerialPrefixLen = maxSCSIDiskSerialLength - hashedSerialHexLength - 1
+)
+
+// GetDiskSerial returns a stable serial that fits the SCSI serial limit.
+// Short volume names are unchanged for compatibility; long names combine a
+// readable prefix with a 12-character SHA-256 suffix.
+func GetDiskSerial(volumeName string) string {
+	if len(volumeName) <= maxSCSIDiskSerialLength {
+		return volumeName
+	}
+
+	digest := sha256.Sum256([]byte(volumeName))
+	return volumeName[:readableSerialPrefixLen] + "-" + hex.EncodeToString(digest[:])[:hashedSerialHexLength]
 }
 
 // getSnapshotSourceVolumeMode returns the volume mode recorded on the VolumeSnapshotContent
@@ -64,12 +84,22 @@ func getSnapshotSourceVolumeMode(ctx context.Context, apiReader client.Reader, s
 	return content.Spec.SourceVolumeMode, nil
 }
 
+func diskSerialCollision(disks []v1.Disk, volumeName, serial string) string {
+	for _, disk := range disks {
+		if disk.Name != volumeName && disk.Serial == serial {
+			return disk.Name
+		}
+	}
+	return ""
+}
+
 // HotplugVolume hotplugs a restore volume to the target VM.
-// It handles PVC and snapshot sources, creating temporary PVCs for snapshots.
+// It handles PVC and snapshot sources, creating temporary PVCs for snapshot sources.
 // apiReader is a non-cached reader used to read DataVolume status immediately after creation.
 func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader, vmfr *restorev1alpha1.VirtualMachineFileRestore, vm *v1.VirtualMachine) error {
 	logger := log.FromContext(ctx)
 	volumeName := GetVolumeName(vmfr.Name)
+	serial := GetDiskSerial(volumeName)
 
 	// Issue #16: Check for other restore operations on this VM
 	for _, vol := range vm.Spec.Template.Spec.Volumes {
@@ -104,6 +134,10 @@ func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader
 			"volumeExists", volumeExists, "diskExists", diskExists)
 		return fmt.Errorf("partial hotplug detected (volume=%v, disk=%v), needs cleanup",
 			volumeExists, diskExists)
+	}
+
+	if collidingDisk := diskSerialCollision(vm.Spec.Template.Spec.Domain.Devices.Disks, volumeName, serial); collidingDisk != "" {
+		return fmt.Errorf("disk serial already in use by disk %s", collidingDisk)
 	}
 
 	// Build volume source based on the restore source type
@@ -230,7 +264,7 @@ func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader
 				ReadOnly: false,
 			},
 		},
-		Serial: volumeName,
+		Serial: serial,
 	}
 
 	// Use Patch instead of Update to avoid conflicts from concurrent VM modifications

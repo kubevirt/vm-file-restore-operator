@@ -1235,7 +1235,7 @@ func hotplugPVCToVM(
 	vm.Spec.Template.Spec.Domain.Devices.Disks = append(vm.Spec.Template.Spec.Domain.Devices.Disks, kubevirtv1.Disk{
 		Name:       volumeName,
 		DiskDevice: kubevirtv1.DiskDevice{Disk: &kubevirtv1.DiskTarget{Bus: kubevirtv1.DiskBusSCSI}},
-		Serial:     volumeName,
+		Serial:     controller.GetDiskSerial(volumeName),
 	})
 	_, err = virtClient.VirtualMachine(namespace).Update(context.Background(), vm, metav1.UpdateOptions{})
 	if err != nil {

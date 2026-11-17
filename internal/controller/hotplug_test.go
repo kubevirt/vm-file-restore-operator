@@ -29,6 +29,84 @@ func TestGetVolumeName(t *testing.T) {
 	}
 }
 
+func TestGetDiskSerial_ShortVolumeNameUnchanged(t *testing.T) {
+	assert.Equal(t, "test-restore", GetDiskSerial("test-restore"))
+}
+
+func TestGetDiskSerial_EmptyVolumeNameReturnsEmpty(t *testing.T) {
+	assert.Equal(t, "", GetDiskSerial(""))
+}
+
+func TestGetDiskSerial_LongVolumeNameUsesReadablePrefixAndHash(t *testing.T) {
+	volumeName := "my-really-long-restore-name-abcdefgh-restore"
+
+	serial := GetDiskSerial(volumeName)
+
+	assert.Equal(t, "my-really-long-restore--50f0fd4286a2", serial)
+	assert.Len(t, serial, maxSCSIDiskSerialLength)
+	assert.Equal(t, serial, GetDiskSerial(volumeName))
+}
+
+func TestGetDiskSerial_SerialLengthBoundary(t *testing.T) {
+	volumeName := "abcdefghijklmnopqrstuvwxyz0123456789"
+	require.Len(t, volumeName, maxSCSIDiskSerialLength)
+
+	assert.Equal(t, volumeName, GetDiskSerial(volumeName))
+	assert.Equal(t, "abcdefghijklmnopqrstuvw-d6e05f96ac22", GetDiskSerial(volumeName+"0"))
+}
+
+func TestHotplugVolume_LongVolumeNameShortensDiskSerial(t *testing.T) {
+	vmfr := snapshotRestoreCR()
+	vmfr.Name = "my-really-long-restore-name-abcdefgh"
+	volumeName := GetVolumeName(vmfr.Name)
+	existingDV := &cdiv1beta1.DataVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: volumeName, Namespace: "default"},
+		Status:     cdiv1beta1.DataVolumeStatus{Phase: cdiv1beta1.Succeeded},
+	}
+	vm := targetVM()
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithStatusSubresource(&cdiv1beta1.DataVolume{}).
+		WithObjects(existingDV, vm).
+		Build()
+
+	err := HotplugVolume(context.Background(), c, c, vmfr, vm)
+
+	require.NoError(t, err)
+	updatedVM := &v1.VirtualMachine{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(vm), updatedVM))
+	require.Len(t, updatedVM.Spec.Template.Spec.Volumes, 1)
+	require.Len(t, updatedVM.Spec.Template.Spec.Domain.Devices.Disks, 1)
+	assert.Equal(t, volumeName, updatedVM.Spec.Template.Spec.Volumes[0].Name)
+	assert.Equal(t, volumeName, updatedVM.Spec.Template.Spec.Domain.Devices.Disks[0].Name)
+	assert.Equal(t, "my-really-long-restore--50f0fd4286a2",
+		updatedVM.Spec.Template.Spec.Domain.Devices.Disks[0].Serial)
+}
+
+func TestHotplugVolume_RejectsExistingDiskSerialCollision(t *testing.T) {
+	vmfr := snapshotRestoreCR()
+	vmfr.Name = "my-really-long-restore-name-abcdefgh"
+	volumeName := GetVolumeName(vmfr.Name)
+	existingDisk := v1.Disk{
+		Name:   "existing-disk",
+		Serial: GetDiskSerial(volumeName),
+	}
+	vm := targetVM()
+	vm.Spec.Template.Spec.Domain.Devices.Disks = append(vm.Spec.Template.Spec.Domain.Devices.Disks, existingDisk)
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithObjects(vm).
+		Build()
+
+	err := HotplugVolume(context.Background(), c, c, vmfr, vm)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "disk serial already in use")
+	updatedVM := &v1.VirtualMachine{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(vm), updatedVM))
+	require.Len(t, updatedVM.Spec.Template.Spec.Volumes, 0)
+	require.Len(t, updatedVM.Spec.Template.Spec.Domain.Devices.Disks, 1)
+	assert.Equal(t, existingDisk, updatedVM.Spec.Template.Spec.Domain.Devices.Disks[0])
+}
+
 const (
 	testSnapshotNamespace = "snap-ns"
 	testSnapshotName      = "snap-1"
