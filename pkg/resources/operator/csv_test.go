@@ -17,6 +17,7 @@ limitations under the License.
 package operator
 
 import (
+	"slices"
 	"testing"
 
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -175,61 +176,90 @@ func TestCSVRBACPermissions(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, csv)
 
-	// Verify namespaced permissions include secrets
 	permissions := csv.Spec.InstallStrategy.StrategySpec.Permissions
 	require.Len(t, permissions, 1)
-
-	foundSecrets := false
-	for _, rule := range permissions[0].Rules {
-		for _, resource := range rule.Resources {
-			if resource == "secrets" {
-				foundSecrets = true
-				assert.Contains(t, rule.Verbs, "create")
-				assert.Contains(t, rule.Verbs, "get")
-			}
-		}
+	require.Len(t, permissions[0].Rules, 5)
+	for _, expected := range []policyRuleExpectation{
+		{apiGroup: "", resources: []string{"configmaps", "secrets"}, verbs: []string{"create"}},
+		{
+			apiGroup:      "",
+			resources:     []string{"configmaps"},
+			resourceNames: []string{"vm-file-restore-operator-ssh"},
+			verbs:         []string{"delete", "get", "patch", "update"},
+		},
+		{
+			apiGroup:      "",
+			resources:     []string{"secrets"},
+			resourceNames: []string{"vm-file-restore-operator-ssh"},
+			verbs:         []string{"get"},
+		},
+		{apiGroup: "", resources: []string{"events"}, verbs: []string{"create", "patch"}},
+		{
+			apiGroup:  "coordination.k8s.io",
+			resources: []string{"leases"},
+			verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+		},
+	} {
+		requirePolicyRule(t, permissions[0].Rules, expected)
 	}
-	assert.True(t, foundSecrets, "Secrets permission should be included")
 
-	// Verify cluster permissions include datavolumes and virtualmachineinstances
 	clusterPerms := csv.Spec.InstallStrategy.StrategySpec.ClusterPermissions
 	require.Len(t, clusterPerms, 1)
 	assert.Equal(t, "vm-file-restore-operator-controller-manager", clusterPerms[0].ServiceAccountName)
-	assert.Contains(t, clusterPerms[0].Rules, rbacv1.PolicyRule{
-		APIGroups: []string{"snapshot.storage.k8s.io"},
-		Resources: []string{"volumesnapshotcontents"},
-		Verbs:     []string{"get"},
-	}, "Controller service account should be able to read cluster-scoped VolumeSnapshotContents")
+	require.Len(t, clusterPerms[0].Rules, 11)
+	for _, expected := range []policyRuleExpectation{
+		{
+			apiGroup:  "filerestore.kubevirt.io",
+			resources: []string{"filerestoreoperators"},
+			verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			apiGroup:  "filerestore.kubevirt.io",
+			resources: []string{"filerestoreoperators/status"},
+			verbs:     []string{"get", "update"},
+		},
+		{
+			apiGroup:  "filerestore.kubevirt.io",
+			resources: []string{"virtualmachinefilerestores"},
+			verbs:     []string{"get", "list", "watch", "update", "patch"},
+		},
+		{
+			apiGroup:  "filerestore.kubevirt.io",
+			resources: []string{"virtualmachinefilerestores/status"},
+			verbs:     []string{"get", "patch"},
+		},
+		{apiGroup: "kubevirt.io", resources: []string{"virtualmachines"}, verbs: []string{"get", "list", "watch", "patch"}},
+		{apiGroup: "kubevirt.io", resources: []string{"virtualmachineinstances"}, verbs: []string{"get", "list", "watch"}},
+		{apiGroup: "cdi.kubevirt.io", resources: []string{"datavolumes"}, verbs: []string{"create", "delete", "get"}},
+		{
+			apiGroup:  "snapshot.storage.k8s.io",
+			resources: []string{"volumesnapshots"},
+			verbs:     []string{"get", "list", "watch"},
+		},
+		{apiGroup: "snapshot.storage.k8s.io", resources: []string{"volumesnapshotcontents"}, verbs: []string{"get"}},
+		{apiGroup: "", resources: []string{"persistentvolumeclaims"}, verbs: []string{"get", "list", "watch"}},
+		{apiGroup: "", resources: []string{"pods"}, verbs: []string{"list", "watch"}},
+	} {
+		requirePolicyRule(t, clusterPerms[0].Rules, expected)
+	}
+}
 
-	foundDataVolumes := false
-	foundVMInstances := false
-	foundVMsWithPatch := false
+type policyRuleExpectation struct {
+	apiGroup      string
+	resources     []string
+	resourceNames []string
+	verbs         []string
+}
 
-	for _, rule := range clusterPerms[0].Rules {
-		for _, apiGroup := range rule.APIGroups {
-			if apiGroup == "cdi.kubevirt.io" {
-				for _, resource := range rule.Resources {
-					if resource == "datavolumes" {
-						foundDataVolumes = true
-					}
-				}
-			}
-			if apiGroup == "kubevirt.io" {
-				for _, resource := range rule.Resources {
-					if resource == "virtualmachineinstances" {
-						foundVMInstances = true
-					}
-					if resource == "virtualmachines" {
-						if assert.Contains(t, rule.Verbs, "patch") && assert.Contains(t, rule.Verbs, "update") {
-							foundVMsWithPatch = true
-						}
-					}
-				}
-			}
+func requirePolicyRule(t *testing.T, rules []rbacv1.PolicyRule, expected policyRuleExpectation) {
+	t.Helper()
+	for _, rule := range rules {
+		if slices.Equal(rule.APIGroups, []string{expected.apiGroup}) &&
+			slices.Equal(rule.Resources, expected.resources) &&
+			slices.Equal(rule.ResourceNames, expected.resourceNames) &&
+			slices.Equal(rule.Verbs, expected.verbs) {
+			return
 		}
 	}
-
-	assert.True(t, foundDataVolumes, "DataVolumes permission should be included")
-	assert.True(t, foundVMInstances, "VirtualMachineInstances permission should be included")
-	assert.True(t, foundVMsWithPatch, "VirtualMachines should have patch/update verbs")
+	require.Failf(t, "missing policy rule", "expected=%+v", expected)
 }
