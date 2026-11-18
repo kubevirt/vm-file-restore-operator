@@ -178,7 +178,7 @@ func validateVMHotplugState(vm *v1.VirtualMachine, volumeName string) (bool, err
 
 // HotplugVolume hotplugs a restore volume to the target VM.
 // It handles PVC and snapshot sources, creating temporary PVCs for snapshot sources.
-// apiReader is a non-cached reader used to read DataVolume status immediately after creation.
+// apiReader is a non-cached reader used for DataVolume status and VM/VMI serial-collision checks.
 func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader, vmfr *restorev1alpha1.VirtualMachineFileRestore) error {
 	logger := log.FromContext(ctx)
 	volumeName := GetVolumeName(vmfr.Name)
@@ -394,7 +394,11 @@ func UnplugVolume(ctx context.Context, c client.Client, apiReader client.Reader,
 		if !isRestoreDataVolume(dataVolume, vmfr) {
 			return nil
 		}
-		if err := c.Delete(ctx, dataVolume); err != nil && !errors.IsNotFound(err) {
+		preconditions := client.Preconditions{
+			UID:             &dataVolume.UID,
+			ResourceVersion: &dataVolume.ResourceVersion,
+		}
+		if err := c.Delete(ctx, dataVolume, preconditions); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("delete DataVolume: %w", err)
 		}
 	}
