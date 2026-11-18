@@ -838,6 +838,10 @@ func handleCleanupPhase(ctx context.Context, r *VirtualMachineFileRestoreReconci
 
 	// Unplug volume
 	if err := UnplugVolume(ctx, r.Client, r.APIReader, vmfr, vm); err != nil {
+		if IsTransient(err) {
+			logger.Info("Volume cleanup encountered transient condition, will retry", "error", err)
+			return incrementRetryAndRequeue(ctx, r, vmfr, cleanupRetryType, retryBaseInterval)
+		}
 		return failRestore(ctx, r, vmfr, err, "failed to unplug volume from VM")
 	}
 

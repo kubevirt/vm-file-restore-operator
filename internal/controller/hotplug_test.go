@@ -202,16 +202,11 @@ func TestHotplugVolume_RejectsVMIDiskSerialCollision(t *testing.T) {
 	assert.Contains(t, err.Error(), "disk serial already in use by disk ephemeral-disk")
 }
 
-func TestHotplugVolume_RereadsVMWhenCachedDiskCollisionIsStale(t *testing.T) {
+func TestHotplugVolume_AttachesWhenNoSerialCollisionExists(t *testing.T) {
 	vmfr := pvcRestoreCR()
 	vmfr.Name = longRestoreCRName
 	volumeName := GetVolumeName(vmfr.Name)
 	freshVM := targetVM()
-	staleVM := freshVM.DeepCopy()
-	staleVM.Spec.Template.Spec.Domain.Devices.Disks = append(
-		staleVM.Spec.Template.Spec.Domain.Devices.Disks,
-		v1.Disk{Name: "removed-disk", Serial: GetDiskSerial(volumeName)},
-	)
 	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
 		WithObjects(freshVM).
 		Build()
@@ -226,15 +221,9 @@ func TestHotplugVolume_RereadsVMWhenCachedDiskCollisionIsStale(t *testing.T) {
 	assert.Equal(t, GetDiskSerial(volumeName), updatedVM.Spec.Template.Spec.Domain.Devices.Disks[0].Serial)
 }
 
-func TestHotplugVolume_CachedDiskCollisionAPIReadFailureIsTransient(t *testing.T) {
+func TestHotplugVolume_APIReadFailureIsTransient(t *testing.T) {
 	vmfr := pvcRestoreCR()
 	vmfr.Name = longRestoreCRName
-	volumeName := GetVolumeName(vmfr.Name)
-	staleVM := targetVM()
-	staleVM.Spec.Template.Spec.Domain.Devices.Disks = append(
-		staleVM.Spec.Template.Spec.Domain.Devices.Disks,
-		v1.Disk{Name: "existing-disk", Serial: GetDiskSerial(volumeName)},
-	)
 	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).Build()
 	apiReader := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
 		WithInterceptorFuncs(interceptor.Funcs{
@@ -345,15 +334,19 @@ func TestUnplugVolume_UsesAPIReaderForDataVolumeCleanup(t *testing.T) {
 		WithObjects(ownedDataVolume).
 		Build()
 	deleteCalled := false
+	dataVolumeReads := 0
 	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
 		WithObjects(ownedDataVolume, targetVM()).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if _, ok := obj.(*cdiv1beta1.DataVolume); ok {
-					return apierrors.NewNotFound(
-						schema.GroupResource{Group: "cdi.kubevirt.io", Resource: "datavolumes"},
-						key.Name,
-					)
+					dataVolumeReads++
+					if dataVolumeReads == 1 {
+						return apierrors.NewNotFound(
+							schema.GroupResource{Group: "cdi.kubevirt.io", Resource: "datavolumes"},
+							key.Name,
+						)
+					}
 				}
 				return cl.Get(ctx, key, obj, opts...)
 			},

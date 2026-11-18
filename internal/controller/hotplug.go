@@ -387,7 +387,7 @@ func UnplugVolume(ctx context.Context, c client.Client, apiReader client.Reader,
 		}
 		if err := dataVolumeReader.Get(ctx, client.ObjectKeyFromObject(dataVolume), dataVolume); err != nil {
 			if !errors.IsNotFound(err) {
-				return fmt.Errorf("get DataVolume: %w", err)
+				return NewTransientError(fmt.Sprintf("get DataVolume: %v", err))
 			}
 			return nil
 		}
@@ -398,6 +398,9 @@ func UnplugVolume(ctx context.Context, c client.Client, apiReader client.Reader,
 			UID: &dataVolume.UID,
 		}
 		if err := c.Delete(ctx, dataVolume, preconditions); err != nil && !errors.IsNotFound(err) {
+			if errors.IsConflict(err) {
+				return NewTransientError(fmt.Sprintf("delete DataVolume: %v", err))
+			}
 			return fmt.Errorf("delete DataVolume: %w", err)
 		}
 	}
