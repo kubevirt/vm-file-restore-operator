@@ -395,8 +395,7 @@ func UnplugVolume(ctx context.Context, c client.Client, apiReader client.Reader,
 			return nil
 		}
 		preconditions := client.Preconditions{
-			UID:             &dataVolume.UID,
-			ResourceVersion: &dataVolume.ResourceVersion,
+			UID: &dataVolume.UID,
 		}
 		if err := c.Delete(ctx, dataVolume, preconditions); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("delete DataVolume: %w", err)
