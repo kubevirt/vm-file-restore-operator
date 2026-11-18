@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,8 +11,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	v1 "kubevirt.io/api/core/v1"
 	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
@@ -21,6 +25,8 @@ import (
 	restorev1alpha1 "kubevirt.io/vm-file-restore-operator/api/v1alpha1"
 )
 
+const longRestoreCRName = "my-really-long-restore-name-abcdefgh"
+
 func TestGetVolumeName(t *testing.T) {
 	name := GetVolumeName("my-restore")
 	expected := "my-restore-restore"
@@ -29,35 +35,53 @@ func TestGetVolumeName(t *testing.T) {
 	}
 }
 
-func TestGetDiskSerial_ShortVolumeNameUnchanged(t *testing.T) {
-	assert.Equal(t, "test-restore", GetDiskSerial("test-restore"))
-}
+func TestGetDiskSerial(t *testing.T) {
+	tests := []struct {
+		name       string
+		volumeName string
+		expected   string
+	}{
+		{
+			name:       "empty volume name",
+			volumeName: "",
+			expected:   "",
+		},
+		{
+			name:       "short volume name unchanged",
+			volumeName: "test-restore",
+			expected:   "test-restore",
+		},
+		{
+			name:       "exact serial limit unchanged",
+			volumeName: "abcdefghijklmnopqrstuvwxyz0123456789",
+			expected:   "abcdefghijklmnopqrstuvwxyz0123456789",
+		},
+		{
+			name:       "long volume name uses readable prefix and hash",
+			volumeName: "my-really-long-restore-name-abcdefgh-restore",
+			expected:   "my-really-long-restore--50f0fd4286a2",
+		},
+		{
+			name:       "serial just over limit is hashed",
+			volumeName: "abcdefghijklmnopqrstuvwxyz01234567890",
+			expected:   "abcdefghijklmnopqrstuvw-d6e05f96ac22",
+		},
+	}
 
-func TestGetDiskSerial_EmptyVolumeNameReturnsEmpty(t *testing.T) {
-	assert.Equal(t, "", GetDiskSerial(""))
-}
-
-func TestGetDiskSerial_LongVolumeNameUsesReadablePrefixAndHash(t *testing.T) {
-	volumeName := "my-really-long-restore-name-abcdefgh-restore"
-
-	serial := GetDiskSerial(volumeName)
-
-	assert.Equal(t, "my-really-long-restore--50f0fd4286a2", serial)
-	assert.Len(t, serial, maxSCSIDiskSerialLength)
-	assert.Equal(t, serial, GetDiskSerial(volumeName))
-}
-
-func TestGetDiskSerial_SerialLengthBoundary(t *testing.T) {
-	volumeName := "abcdefghijklmnopqrstuvwxyz0123456789"
-	require.Len(t, volumeName, maxSCSIDiskSerialLength)
-
-	assert.Equal(t, volumeName, GetDiskSerial(volumeName))
-	assert.Equal(t, "abcdefghijklmnopqrstuvw-d6e05f96ac22", GetDiskSerial(volumeName+"0"))
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assert.Equal(t, test.expected, GetDiskSerial(test.volumeName))
+			if len(test.volumeName) > maxSCSIDiskSerialLength {
+				assert.Len(t, test.expected, maxSCSIDiskSerialLength)
+				assert.Equal(t, test.expected, GetDiskSerial(test.volumeName))
+			}
+		})
+	}
 }
 
 func TestHotplugVolume_LongVolumeNameShortensDiskSerial(t *testing.T) {
 	vmfr := snapshotRestoreCR()
-	vmfr.Name = "my-really-long-restore-name-abcdefgh"
+	vmfr.Name = longRestoreCRName
 	volumeName := GetVolumeName(vmfr.Name)
 	existingDV := &cdiv1beta1.DataVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: volumeName, Namespace: "default"},
@@ -69,7 +93,7 @@ func TestHotplugVolume_LongVolumeNameShortensDiskSerial(t *testing.T) {
 		WithObjects(existingDV, vm).
 		Build()
 
-	err := HotplugVolume(context.Background(), c, c, vmfr, vm)
+	err := HotplugVolume(context.Background(), c, c, vmfr)
 
 	require.NoError(t, err)
 	updatedVM := &v1.VirtualMachine{}
@@ -84,7 +108,7 @@ func TestHotplugVolume_LongVolumeNameShortensDiskSerial(t *testing.T) {
 
 func TestHotplugVolume_RejectsExistingDiskSerialCollision(t *testing.T) {
 	vmfr := snapshotRestoreCR()
-	vmfr.Name = "my-really-long-restore-name-abcdefgh"
+	vmfr.Name = longRestoreCRName
 	volumeName := GetVolumeName(vmfr.Name)
 	existingDisk := v1.Disk{
 		Name:   "existing-disk",
@@ -96,7 +120,7 @@ func TestHotplugVolume_RejectsExistingDiskSerialCollision(t *testing.T) {
 		WithObjects(vm).
 		Build()
 
-	err := HotplugVolume(context.Background(), c, c, vmfr, vm)
+	err := HotplugVolume(context.Background(), c, c, vmfr)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "disk serial already in use")
@@ -105,6 +129,246 @@ func TestHotplugVolume_RejectsExistingDiskSerialCollision(t *testing.T) {
 	require.Len(t, updatedVM.Spec.Template.Spec.Volumes, 0)
 	require.Len(t, updatedVM.Spec.Template.Spec.Domain.Devices.Disks, 1)
 	assert.Equal(t, existingDisk, updatedVM.Spec.Template.Spec.Domain.Devices.Disks[0])
+}
+
+func TestDiskSerialCollision_IgnoresCaseAndWhitespace(t *testing.T) {
+	disks := []v1.Disk{{Name: "existing-disk", Serial: "  MY-REALLY-LONG-RESTORE--50F0FD4286A2  "}}
+
+	assert.Equal(t, "existing-disk",
+		diskSerialCollision(disks, "my-really-long-restore-name-abcdefgh-restore",
+			"my-really-long-restore--50f0fd4286a2"))
+}
+
+func TestHotplugVolume_RejectsSerialCollisionOnReplay(t *testing.T) {
+	vmfr := snapshotRestoreCR()
+	vmfr.Name = longRestoreCRName
+	volumeName := GetVolumeName(vmfr.Name)
+	serial := GetDiskSerial(volumeName)
+	vm := targetVM()
+	vm.Spec.Template.Spec.Volumes = append(vm.Spec.Template.Spec.Volumes, v1.Volume{Name: volumeName})
+	vm.Spec.Template.Spec.Domain.Devices.Disks = append(
+		vm.Spec.Template.Spec.Domain.Devices.Disks,
+		v1.Disk{Name: volumeName},
+		v1.Disk{Name: "existing-disk", Serial: serial},
+	)
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithObjects(vm).
+		Build()
+
+	err := HotplugVolume(context.Background(), c, c, vmfr)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "disk serial already in use by disk existing-disk")
+}
+
+func TestHotplugVolume_ReplayWithoutCollisionDoesNotDuplicateEntries(t *testing.T) {
+	vmfr := pvcRestoreCR()
+	volumeName := GetVolumeName(vmfr.Name)
+	vm := targetVM()
+	vm.Spec.Template.Spec.Volumes = append(vm.Spec.Template.Spec.Volumes, v1.Volume{Name: volumeName})
+	vm.Spec.Template.Spec.Domain.Devices.Disks = append(
+		vm.Spec.Template.Spec.Domain.Devices.Disks,
+		v1.Disk{Name: volumeName},
+	)
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithObjects(vm).
+		Build()
+
+	err := HotplugVolume(context.Background(), c, c, vmfr)
+
+	require.NoError(t, err)
+	updatedVM := &v1.VirtualMachine{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(vm), updatedVM))
+	require.Len(t, updatedVM.Spec.Template.Spec.Volumes, 1)
+	require.Len(t, updatedVM.Spec.Template.Spec.Domain.Devices.Disks, 1)
+}
+
+func TestHotplugVolume_RejectsVMIDiskSerialCollision(t *testing.T) {
+	vmfr := snapshotRestoreCR()
+	vmfr.Name = longRestoreCRName
+	volumeName := GetVolumeName(vmfr.Name)
+	vmi := targetVMI()
+	vmi.Spec.Domain.Devices.Disks = append(vmi.Spec.Domain.Devices.Disks, v1.Disk{
+		Name:   "ephemeral-disk",
+		Serial: GetDiskSerial(volumeName),
+	})
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithObjects(targetVM(), vmi).
+		Build()
+
+	err := HotplugVolume(context.Background(), c, c, vmfr)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "disk serial already in use by disk ephemeral-disk")
+}
+
+func TestHotplugVolume_RereadsVMWhenCachedDiskCollisionIsStale(t *testing.T) {
+	vmfr := pvcRestoreCR()
+	vmfr.Name = longRestoreCRName
+	volumeName := GetVolumeName(vmfr.Name)
+	freshVM := targetVM()
+	staleVM := freshVM.DeepCopy()
+	staleVM.Spec.Template.Spec.Domain.Devices.Disks = append(
+		staleVM.Spec.Template.Spec.Domain.Devices.Disks,
+		v1.Disk{Name: "removed-disk", Serial: GetDiskSerial(volumeName)},
+	)
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithObjects(freshVM).
+		Build()
+
+	err := HotplugVolume(context.Background(), c, c, vmfr)
+
+	require.NoError(t, err)
+	updatedVM := &v1.VirtualMachine{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(freshVM), updatedVM))
+	require.Len(t, updatedVM.Spec.Template.Spec.Volumes, 1)
+	require.Len(t, updatedVM.Spec.Template.Spec.Domain.Devices.Disks, 1)
+	assert.Equal(t, GetDiskSerial(volumeName), updatedVM.Spec.Template.Spec.Domain.Devices.Disks[0].Serial)
+}
+
+func TestHotplugVolume_CachedDiskCollisionAPIReadFailureIsTransient(t *testing.T) {
+	vmfr := pvcRestoreCR()
+	vmfr.Name = longRestoreCRName
+	volumeName := GetVolumeName(vmfr.Name)
+	staleVM := targetVM()
+	staleVM.Spec.Template.Spec.Domain.Devices.Disks = append(
+		staleVM.Spec.Template.Spec.Domain.Devices.Disks,
+		v1.Disk{Name: "existing-disk", Serial: GetDiskSerial(volumeName)},
+	)
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).Build()
+	apiReader := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+				if _, ok := obj.(*v1.VirtualMachine); ok {
+					return errors.New("apiserver unavailable")
+				}
+				return nil
+			},
+		}).Build()
+
+	err := HotplugVolume(context.Background(), c, apiReader, vmfr)
+
+	require.Error(t, err)
+	assert.True(t, IsTransient(err))
+	assert.Contains(t, err.Error(), "failed to re-read target VM")
+}
+
+func TestHotplugVolume_ReadsTargetObjectsThroughAPIReaderBeforeAcceptingSerial(t *testing.T) {
+	vmfr := pvcRestoreCR()
+	vmfr.Name = longRestoreCRName
+	volumeName := GetVolumeName(vmfr.Name)
+	collidingVMI := targetVMI()
+	collidingVMI.Spec.Domain.Devices.Disks = append(collidingVMI.Spec.Domain.Devices.Disks, v1.Disk{
+		Name:   "recently-added-disk",
+		Serial: GetDiskSerial(volumeName),
+	})
+	apiReader := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithObjects(targetVM(), collidingVMI).
+		Build()
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithObjects(targetVM()).
+		Build()
+
+	err := HotplugVolume(context.Background(), c, apiReader, vmfr)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "disk serial already in use by disk recently-added-disk")
+}
+
+func TestHotplugVolume_PatchConflictIsTransientAndUsesResourceVersion(t *testing.T) {
+	vmfr := pvcRestoreCR()
+	freshVM := targetVM()
+	freshVM.ResourceVersion = "123"
+	apiReader := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithObjects(freshVM).
+		Build()
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithObjects(targetVM()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(_ context.Context, _ client.WithWatch, obj client.Object, patch client.Patch, _ ...client.PatchOption) error {
+				patchData, err := patch.Data(obj)
+				if err != nil {
+					t.Errorf("read patch data: %v", err)
+				}
+				if !bytes.Contains(patchData, []byte(`"resourceVersion":"123"`)) {
+					t.Errorf("patch does not include the API-read resource version: %s", patchData)
+				}
+				return apierrors.NewConflict(
+					schema.GroupResource{Group: "kubevirt.io", Resource: "virtualmachines"},
+					"myvm",
+					errors.New("concurrent update"),
+				)
+			},
+		}).Build()
+
+	err := HotplugVolume(context.Background(), c, apiReader, vmfr)
+
+	require.Error(t, err)
+	assert.True(t, IsTransient(err))
+	assert.Contains(t, err.Error(), "failed to hotplug volume to VM")
+}
+
+func TestUnplugVolume_DoesNotDeleteUnownedDataVolume(t *testing.T) {
+	vmfr := snapshotRestoreCR()
+	volumeName := GetVolumeName(vmfr.Name)
+	unownedDataVolume := &cdiv1beta1.DataVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      volumeName,
+			Namespace: vmfr.Namespace,
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithObjects(unownedDataVolume, targetVM()).
+		Build()
+
+	err := UnplugVolume(context.Background(), c, c, vmfr, targetVM())
+
+	require.NoError(t, err)
+	err = c.Get(context.Background(), client.ObjectKeyFromObject(unownedDataVolume), unownedDataVolume)
+	require.NoError(t, err)
+}
+
+func TestUnplugVolume_UsesAPIReaderForDataVolumeCleanup(t *testing.T) {
+	vmfr := snapshotRestoreCR()
+	volumeName := GetVolumeName(vmfr.Name)
+	ownedDataVolume := &cdiv1beta1.DataVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      volumeName,
+			Namespace: vmfr.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "vm-file-restore-operator",
+				"filerestore.kubevirt.io/name": vmfr.Name,
+			},
+		},
+	}
+	apiReader := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithObjects(ownedDataVolume).
+		Build()
+	deleteCalled := false
+	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
+		WithObjects(ownedDataVolume, targetVM()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*cdiv1beta1.DataVolume); ok {
+					return apierrors.NewNotFound(
+						schema.GroupResource{Group: "cdi.kubevirt.io", Resource: "datavolumes"},
+						key.Name,
+					)
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				deleteCalled = true
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+
+	err := UnplugVolume(context.Background(), c, apiReader, vmfr, targetVM())
+
+	require.NoError(t, err)
+	require.True(t, deleteCalled, "expected UnplugVolume to delete the API-reader-owned DataVolume")
+	err = c.Get(context.Background(), client.ObjectKeyFromObject(ownedDataVolume), ownedDataVolume)
+	require.True(t, apierrors.IsNotFound(err), "expected cached DataVolume to be deleted after API-reader cleanup")
 }
 
 const (
@@ -238,10 +502,29 @@ func snapshotRestoreCR() *restorev1alpha1.VirtualMachineFileRestore {
 	}
 }
 
+func pvcRestoreCR() *restorev1alpha1.VirtualMachineFileRestore {
+	return &restorev1alpha1.VirtualMachineFileRestore{
+		ObjectMeta: metav1.ObjectMeta{Name: "restore-1", Namespace: "default"},
+		Spec: restorev1alpha1.VirtualMachineFileRestoreSpec{
+			Target: corev1.TypedLocalObjectReference{Name: "myvm"},
+			Source: restorev1alpha1.RestoreSource{
+				PVC: &restorev1alpha1.PVCSource{Name: "source-pvc"},
+			},
+		},
+	}
+}
+
 func targetVM() *v1.VirtualMachine {
 	return &v1.VirtualMachine{
 		ObjectMeta: metav1.ObjectMeta{Name: "myvm", Namespace: "default"},
 		Spec:       v1.VirtualMachineSpec{Template: &v1.VirtualMachineInstanceTemplateSpec{}},
+	}
+}
+
+func targetVMI() *v1.VirtualMachineInstance {
+	return &v1.VirtualMachineInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "myvm", Namespace: "default"},
+		Spec:       v1.VirtualMachineInstanceSpec{Domain: v1.DomainSpec{Devices: v1.Devices{}}},
 	}
 }
 
@@ -258,10 +541,10 @@ func TestHotplugVolume_SnapshotDerivesVolumeMode(t *testing.T) {
 	block := corev1.PersistentVolumeBlock
 	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
 		WithStatusSubresource(&cdiv1beta1.DataVolume{}).
-		WithObjects(volumeSnapshot(ptr.To(testContentName)), volumeSnapshotContent(&block)).
+		WithObjects(volumeSnapshot(ptr.To(testContentName)), volumeSnapshotContent(&block), targetVM()).
 		Build()
 
-	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR(), targetVM())
+	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR())
 	require.Error(t, err)
 	assert.True(t, IsTransient(err))
 
@@ -275,10 +558,10 @@ func TestHotplugVolume_SnapshotDerivesVolumeMode(t *testing.T) {
 func TestHotplugVolume_SnapshotContentReadFailsFallsBackToDefault(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
 		WithStatusSubresource(&cdiv1beta1.DataVolume{}).
-		WithObjects(volumeSnapshot(ptr.To(testContentName))). // no content object -> get fails
+		WithObjects(volumeSnapshot(ptr.To(testContentName)), targetVM()). // no content object -> get fails
 		Build()
 
-	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR(), targetVM())
+	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR())
 	require.Error(t, err)
 	assert.True(t, IsTransient(err), "content read failure must not hard-fail the restore")
 
@@ -297,7 +580,7 @@ func TestHotplugVolume_FailedDataVolumeReturnsNonTransientError(t *testing.T) {
 		WithObjects(existingDV, targetVM()).
 		Build()
 
-	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR(), targetVM())
+	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR())
 	require.Error(t, err)
 	assert.False(t, IsTransient(err), "Failed DataVolume must produce a non-transient (terminal) error")
 	assert.Contains(t, err.Error(), "Failed")
@@ -320,7 +603,7 @@ func TestHotplugVolume_TimedOutDataVolumeReturnsNonTransientError(t *testing.T) 
 		WithObjects(existingDV, targetVM()).
 		Build()
 
-	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR(), targetVM())
+	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR())
 	require.Error(t, err)
 	assert.False(t, IsTransient(err), "timed-out DataVolume must produce a non-transient error")
 	assert.Contains(t, err.Error(), "timed out")
@@ -343,7 +626,7 @@ func TestHotplugVolume_PendingDataVolumeWithinTimeoutReturnsTransientError(t *te
 		WithObjects(existingDV, targetVM()).
 		Build()
 
-	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR(), targetVM())
+	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR())
 	require.Error(t, err)
 	assert.True(t, IsTransient(err), "Pending DataVolume within timeout must produce a transient error")
 }
@@ -369,7 +652,7 @@ func TestHotplugVolume_ExistingDataVolumeSkipsSnapshotRead(t *testing.T) {
 		}).
 		Build()
 
-	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR(), vm)
+	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR())
 	require.NoError(t, err)
 	assert.Equal(t, 0, snapshotGets, "should not read the VolumeSnapshot when the DataVolume already exists")
 }
