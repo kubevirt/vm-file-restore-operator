@@ -483,7 +483,7 @@ func handleHotpluggingPhase(ctx context.Context, r *VirtualMachineFileRestoreRec
 	}
 
 	// Hotplug the volume
-	if err := HotplugVolume(ctx, r.Client, r.APIReader, vmfr, vm); err != nil {
+	if err := HotplugVolume(ctx, r.Client, r.APIReader, vmfr); err != nil {
 		// Issue #5: Handle transient errors by requeuing instead of failing
 		if IsTransient(err) {
 			logger.Info("Hotplug encountered transient condition, will retry", "error", err)
@@ -837,7 +837,11 @@ func handleCleanupPhase(ctx context.Context, r *VirtualMachineFileRestoreReconci
 	}
 
 	// Unplug volume
-	if err := UnplugVolume(ctx, r.Client, vmfr, vm); err != nil {
+	if err := UnplugVolume(ctx, r.Client, r.APIReader, vmfr, vm); err != nil {
+		if IsTransient(err) {
+			logger.Info("Volume cleanup encountered transient condition, will retry", "error", err)
+			return incrementRetryAndRequeue(ctx, r, vmfr, cleanupRetryType, retryBaseInterval)
+		}
 		return failRestore(ctx, r, vmfr, err, "failed to unplug volume from VM")
 	}
 

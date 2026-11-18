@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -19,13 +21,31 @@ import (
 )
 
 // GetVolumeName returns the volume name for a given restore CR name.
-// The volume name is used as the volume name, disk name, and serial number for guest OS detection.
+// The volume name is used as the volume and disk name; GetDiskSerial derives its guest-detection serial.
 // Panics if crName is empty (caller error - should never happen with valid K8s objects).
 func GetVolumeName(crName string) string {
 	if crName == "" {
 		panic("GetVolumeName called with empty crName")
 	}
 	return crName + "-restore"
+}
+
+const (
+	maxSCSIDiskSerialLength = 36
+	hashedSerialHexLength   = 12
+	readableSerialPrefixLen = maxSCSIDiskSerialLength - hashedSerialHexLength - 1
+)
+
+// GetDiskSerial returns a stable serial that fits the SCSI serial limit.
+// Short volume names are unchanged for compatibility; long names combine a
+// readable prefix with a 12-character SHA-256 suffix.
+func GetDiskSerial(volumeName string) string {
+	if len(volumeName) <= maxSCSIDiskSerialLength {
+		return volumeName
+	}
+
+	digest := sha256.Sum256([]byte(volumeName))
+	return volumeName[:readableSerialPrefixLen] + "-" + hex.EncodeToString(digest[:])[:hashedSerialHexLength]
 }
 
 // getSnapshotSourceVolumeMode returns the volume mode recorded on the VolumeSnapshotContent
@@ -64,21 +84,74 @@ func getSnapshotSourceVolumeMode(ctx context.Context, apiReader client.Reader, s
 	return content.Spec.SourceVolumeMode, nil
 }
 
-// HotplugVolume hotplugs a restore volume to the target VM.
-// It handles PVC and snapshot sources, creating temporary PVCs for snapshots.
-// apiReader is a non-cached reader used to read DataVolume status immediately after creation.
-func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader, vmfr *restorev1alpha1.VirtualMachineFileRestore, vm *v1.VirtualMachine) error {
-	logger := log.FromContext(ctx)
-	volumeName := GetVolumeName(vmfr.Name)
+func diskSerialCollision(disks []v1.Disk, volumeName, serial string) string {
+	trimmedSerial := strings.TrimSpace(serial)
+	for _, disk := range disks {
+		if disk.Name != volumeName && strings.EqualFold(strings.TrimSpace(disk.Serial), trimmedSerial) {
+			return disk.Name
+		}
+	}
+	return ""
+}
 
-	// Issue #16: Check for other restore operations on this VM
+func findDiskSerialCollision(vm *v1.VirtualMachine, vmi *v1.VirtualMachineInstance, volumeName, serial string) string {
+	if collidingDisk := diskSerialCollision(vm.Spec.Template.Spec.Domain.Devices.Disks, volumeName, serial); collidingDisk != "" {
+		return collidingDisk
+	}
+	if vmi == nil {
+		return ""
+	}
+	return diskSerialCollision(vmi.Spec.Domain.Devices.Disks, volumeName, serial)
+}
+
+func readTargetVMAndVMI(ctx context.Context, reader client.Reader, key client.ObjectKey) (*v1.VirtualMachine, *v1.VirtualMachineInstance, error) {
+	vm := &v1.VirtualMachine{}
+	if err := reader.Get(ctx, key, vm); err != nil {
+		return nil, nil, NewTransientError(fmt.Sprintf("failed to re-read target VM %s/%s: %v", key.Namespace, key.Name, err))
+	}
+
+	vmi := &v1.VirtualMachineInstance{}
+	if err := reader.Get(ctx, key, vmi); err != nil {
+		if errors.IsNotFound(err) {
+			return vm, nil, nil
+		}
+		return nil, nil, NewTransientError(fmt.Sprintf("failed to re-read target VMI %s/%s: %v", key.Namespace, key.Name, err))
+	}
+	return vm, vmi, nil
+}
+
+func isRestoreDataVolume(dataVolume *cdiv1beta1.DataVolume, vmfr *restorev1alpha1.VirtualMachineFileRestore) bool {
+	return dataVolume.Labels["app.kubernetes.io/managed-by"] == "vm-file-restore-operator" &&
+		dataVolume.Labels["filerestore.kubevirt.io/name"] == vmfr.Name
+}
+
+func resolveTargetVMForSerialCollision(
+	ctx context.Context,
+	apiReader client.Reader,
+	vmfr *restorev1alpha1.VirtualMachineFileRestore,
+) (*v1.VirtualMachine, error) {
+	volumeName := GetVolumeName(vmfr.Name)
+	serial := GetDiskSerial(volumeName)
+	targetKey := client.ObjectKey{Name: vmfr.Spec.Target.Name, Namespace: vmfr.Namespace}
+
+	freshVM, freshVMI, err := readTargetVMAndVMI(ctx, apiReader, targetKey)
+	if err != nil {
+		return nil, err
+	}
+	if collidingDisk := findDiskSerialCollision(freshVM, freshVMI, volumeName, serial); collidingDisk != "" {
+		return nil, fmt.Errorf("disk serial already in use by disk %s", collidingDisk)
+	}
+
+	return freshVM, nil
+}
+
+func validateVMHotplugState(vm *v1.VirtualMachine, volumeName string) (bool, error) {
 	for _, vol := range vm.Spec.Template.Spec.Volumes {
 		if strings.HasSuffix(vol.Name, "-restore") && vol.Name != volumeName {
-			return fmt.Errorf("another restore is in progress (volume %s exists), cannot hotplug", vol.Name)
+			return false, fmt.Errorf("another restore is in progress (volume %s exists), cannot hotplug", vol.Name)
 		}
 	}
 
-	// Issue #15: Check both volume and disk for idempotency
 	volumeExists := false
 	diskExists := false
 	for _, vol := range vm.Spec.Template.Spec.Volumes {
@@ -95,15 +168,32 @@ func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader
 	}
 
 	if volumeExists && diskExists {
-		// Both exist, already hotplugged
-		return nil
+		return true, nil
 	}
 	if volumeExists || diskExists {
-		// Partial state - this shouldn't happen but handle it
-		logger.Error(fmt.Errorf("partial hotplug detected"), "Inconsistent state",
-			"volumeExists", volumeExists, "diskExists", diskExists)
-		return fmt.Errorf("partial hotplug detected (volume=%v, disk=%v), needs cleanup",
-			volumeExists, diskExists)
+		return false, fmt.Errorf("partial hotplug detected (volume=%v, disk=%v), needs cleanup", volumeExists, diskExists)
+	}
+	return false, nil
+}
+
+// HotplugVolume hotplugs a restore volume to the target VM.
+// It handles PVC and snapshot sources, creating temporary PVCs for snapshot sources.
+// apiReader is a non-cached reader used for DataVolume status and VM/VMI serial-collision checks.
+func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader, vmfr *restorev1alpha1.VirtualMachineFileRestore) error {
+	logger := log.FromContext(ctx)
+	volumeName := GetVolumeName(vmfr.Name)
+	serial := GetDiskSerial(volumeName)
+	vm, err := resolveTargetVMForSerialCollision(ctx, apiReader, vmfr)
+	if err != nil {
+		return err
+	}
+
+	alreadyHotplugged, err := validateVMHotplugState(vm, volumeName)
+	if err != nil {
+		return err
+	}
+	if alreadyHotplugged {
+		return nil
 	}
 
 	// Build volume source based on the restore source type
@@ -230,11 +320,12 @@ func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader
 				ReadOnly: false,
 			},
 		},
-		Serial: volumeName,
+		Serial: serial,
 	}
 
-	// Use Patch instead of Update to avoid conflicts from concurrent VM modifications
-	patch := client.MergeFrom(vm.DeepCopy())
+	// Use Patch instead of Update, with optimistic locking so a concurrent VM
+	// change retries collision validation instead of overwriting the newer disk list.
+	patch := client.MergeFromWithOptions(vm.DeepCopy(), client.MergeFromWithOptimisticLock{})
 
 	// Append volume and disk to VM
 	vm.Spec.Template.Spec.Volumes = append(vm.Spec.Template.Spec.Volumes, volume)
@@ -242,6 +333,9 @@ func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader
 
 	// Patch VM (safer than Update, avoids conflicts)
 	if err := c.Patch(ctx, vm, patch); err != nil {
+		if errors.IsConflict(err) {
+			return NewTransientError(fmt.Sprintf("failed to hotplug volume to VM: %v", err))
+		}
 		return fmt.Errorf("failed to hotplug volume to VM: %w", err)
 	}
 
@@ -250,7 +344,7 @@ func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader
 
 // UnplugVolume removes the restore volume from the target VM.
 // It also cleans up temporary PVCs created for snapshot sources.
-func UnplugVolume(ctx context.Context, c client.Client, vmfr *restorev1alpha1.VirtualMachineFileRestore, vm *v1.VirtualMachine) error {
+func UnplugVolume(ctx context.Context, c client.Client, apiReader client.Reader, vmfr *restorev1alpha1.VirtualMachineFileRestore, vm *v1.VirtualMachine) error {
 	volumeName := GetVolumeName(vmfr.Name)
 
 	// Use Patch instead of Update to avoid conflicts from concurrent VM modifications
@@ -287,7 +381,26 @@ func UnplugVolume(ctx context.Context, c client.Client, vmfr *restorev1alpha1.Vi
 				Namespace: vmfr.Namespace,
 			},
 		}
-		if err := c.Delete(ctx, dataVolume); err != nil && !errors.IsNotFound(err) {
+		dataVolumeReader := apiReader
+		if dataVolumeReader == nil {
+			dataVolumeReader = c
+		}
+		if err := dataVolumeReader.Get(ctx, client.ObjectKeyFromObject(dataVolume), dataVolume); err != nil {
+			if !errors.IsNotFound(err) {
+				return NewTransientError(fmt.Sprintf("get DataVolume: %v", err))
+			}
+			return nil
+		}
+		if !isRestoreDataVolume(dataVolume, vmfr) {
+			return nil
+		}
+		preconditions := client.Preconditions{
+			UID: &dataVolume.UID,
+		}
+		if err := c.Delete(ctx, dataVolume, preconditions); err != nil && !errors.IsNotFound(err) {
+			if errors.IsConflict(err) {
+				return NewTransientError(fmt.Sprintf("delete DataVolume: %v", err))
+			}
 			return fmt.Errorf("delete DataVolume: %w", err)
 		}
 	}

@@ -146,6 +146,7 @@ func BuildSSHCommand(osType, volumeName, mountPath, sourcePath string) string {
 	}
 
 	scriptPath := GetHelperScriptPath(osType)
+	serial := GetDiskSerial(volumeName)
 
 	// Strip trailing slashes/backslashes to prevent quoting issues
 	mountPath = strings.TrimRight(mountPath, `/\`)
@@ -156,19 +157,19 @@ func BuildSSHCommand(osType, volumeName, mountPath, sourcePath string) string {
 		// Windows: quote mount-path and source-path
 		if sourcePath != "" {
 			cmd = fmt.Sprintf(`%s restore --serial %s --mount-path "%s" --source-path "%s"`,
-				scriptPath, volumeName, mountPath, sourcePath)
+				scriptPath, serial, mountPath, sourcePath)
 		} else {
 			cmd = fmt.Sprintf(`%s restore --serial %s --mount-path "%s"`,
-				scriptPath, volumeName, mountPath)
+				scriptPath, serial, mountPath)
 		}
 	} else {
 		// Linux: script handles sudo internally (see filerestore.sh)
 		if sourcePath != "" {
 			cmd = fmt.Sprintf(`%s restore --serial %s --mount-path %s --source-path %s`,
-				scriptPath, volumeName, quoteLinuxPath(mountPath), quoteLinuxPath(sourcePath))
+				scriptPath, serial, quoteLinuxPath(mountPath), quoteLinuxPath(sourcePath))
 		} else {
 			cmd = fmt.Sprintf(`%s restore --serial %s --mount-path %s`,
-				scriptPath, volumeName, quoteLinuxPath(mountPath))
+				scriptPath, serial, quoteLinuxPath(mountPath))
 		}
 	}
 

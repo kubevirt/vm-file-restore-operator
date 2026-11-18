@@ -18,6 +18,17 @@ func TestBuildSSHCommand_LinuxManual(t *testing.T) {
 	assert.Equal(t, expected, command)
 }
 
+func TestBuildSSHCommand_LongVolumeNameShortensSerial(t *testing.T) {
+	command := BuildSSHCommand(
+		"linux",
+		"my-really-long-restore-name-abcdefgh-restore",
+		"/backup",
+		"/home/user/data",
+	)
+	expected := "/usr/local/bin/filerestore.sh restore --serial my-really-long-restore--50f0fd4286a2 --mount-path /backup --source-path /home/user/data"
+	assert.Equal(t, expected, command)
+}
+
 func TestBuildSSHCommand_LinuxPathWithSpaces(t *testing.T) {
 	command := BuildSSHCommand("linux", "test-restore", "/backup", "/home/my documents")
 	expected := "/usr/local/bin/filerestore.sh restore --serial test-restore --mount-path /backup --source-path '/home/my documents'"

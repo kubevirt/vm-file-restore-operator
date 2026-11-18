@@ -12,7 +12,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	v1 "kubevirt.io/api/core/v1"
+	cdiv1beta1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -291,6 +293,63 @@ func TestHandleCleanupPhase_RateLimitsBeforeDetachmentDeadline(t *testing.T) {
 	updated := &restorev1alpha1.VirtualMachineFileRestore{}
 	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(vmfr), updated))
 	assert.Zero(t, getAnnotationInt32(updated, annotationCleanupRetries))
+}
+
+func TestHandleCleanupPhase_RetriesTransientDataVolumeCleanupFailure(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, restorev1alpha1.AddToScheme(scheme))
+	require.NoError(t, v1.AddToScheme(scheme))
+	require.NoError(t, cdiv1beta1.AddToScheme(scheme))
+	ctx := context.Background()
+
+	vmfr := &restorev1alpha1.VirtualMachineFileRestore{
+		ObjectMeta: metav1.ObjectMeta{Name: "restore-transient-cleanup", Namespace: "test-ns"},
+		Spec: restorev1alpha1.VirtualMachineFileRestoreSpec{
+			Target: corev1.TypedLocalObjectReference{Name: "target-vm"},
+			Source: restorev1alpha1.RestoreSource{
+				Snapshot: &restorev1alpha1.VolumeSnapshotSource{Name: "source-snapshot"},
+			},
+		},
+		Status: restorev1alpha1.VirtualMachineFileRestoreStatus{
+			Phase:              restorev1alpha1.RestorePhaseCleanup,
+			RestoredFilesCount: ptr.To(int32(2)),
+		},
+	}
+	vm := &v1.VirtualMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: "target-vm", Namespace: "test-ns"},
+		Spec:       v1.VirtualMachineSpec{Template: &v1.VirtualMachineInstanceTemplateSpec{}},
+	}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&restorev1alpha1.VirtualMachineFileRestore{}).
+		WithObjects(vmfr, vm).
+		Build()
+	apiReader := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+				if _, ok := obj.(*cdiv1beta1.DataVolume); ok {
+					return errors.New("apiserver unavailable")
+				}
+				return nil
+			},
+		}).
+		Build()
+	reconciler := &VirtualMachineFileRestoreReconciler{
+		Client:    k8sClient,
+		APIReader: apiReader,
+		Recorder:  &record.FakeRecorder{},
+	}
+
+	result, err := handleCleanupPhase(ctx, reconciler, vmfr)
+
+	require.NoError(t, err)
+	assert.Positive(t, result.RequeueAfter)
+	updated := &restorev1alpha1.VirtualMachineFileRestore{}
+	require.NoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(vmfr), updated))
+	assert.Equal(t, restorev1alpha1.RestorePhaseCleanup, updated.Status.Phase)
+	assert.Empty(t, updated.Status.ErrorMessage)
+	assert.Equal(t, int32(1), getAnnotationInt32(updated, annotationCleanupRetries))
 }
 
 func TestHandleCleanupPhase_SucceedsWhenVolumeDetachedAtTimeout(t *testing.T) {
