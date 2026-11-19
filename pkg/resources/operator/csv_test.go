@@ -212,7 +212,7 @@ func TestCSVRBACPermissions(t *testing.T) {
 	require.Len(t, clusterPerms, 1)
 	assert.Equal(t, permissions[0].ServiceAccountName, clusterPerms[0].ServiceAccountName)
 	assert.Equal(t, "vm-file-restore-operator-controller-manager", clusterPerms[0].ServiceAccountName)
-	require.Len(t, clusterPerms[0].Rules, 11)
+	require.Len(t, clusterPerms[0].Rules, 13)
 	for _, expected := range []policyRuleExpectation{
 		{
 			apiGroup:  "filerestore.kubevirt.io",
@@ -243,6 +243,8 @@ func TestCSVRBACPermissions(t *testing.T) {
 			verbs:     []string{"get", "list", "watch"},
 		},
 		{apiGroup: "snapshot.storage.k8s.io", resources: []string{"volumesnapshotcontents"}, verbs: []string{"get"}},
+		{apiGroup: "authentication.k8s.io", resources: []string{"tokenreviews"}, verbs: []string{"create"}},
+		{apiGroup: "authorization.k8s.io", resources: []string{"subjectaccessreviews"}, verbs: []string{"create"}},
 		{apiGroup: "", resources: []string{"persistentvolumeclaims"}, verbs: []string{"get", "list", "watch"}},
 		{apiGroup: "", resources: []string{"pods"}, verbs: []string{"list", "watch"}},
 	} {
@@ -263,9 +265,10 @@ func TestCSVRBACPermissionsMatchManifests(t *testing.T) {
 	require.NotNil(t, csv)
 
 	managerRole := readClusterRole(t, filepath.Join("..", "..", "..", "config", "rbac", "role.yaml"))
+	metricsAuthRole := readClusterRole(t, filepath.Join("..", "..", "..", "config", "rbac", "metrics_auth_role.yaml"))
 	leaderElectionRole := readRole(t, filepath.Join("..", "..", "..", "config", "rbac", "leader_election_role.yaml"))
 
-	want := normalizePolicyRules(append(managerRole.Rules, leaderElectionRole.Rules...))
+	want := normalizePolicyRules(append(append(managerRole.Rules, metricsAuthRole.Rules...), leaderElectionRole.Rules...))
 	got := normalizePolicyRules(csvPolicyRules(csv))
 	assert.Equal(t, want, got)
 }

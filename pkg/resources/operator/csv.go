@@ -308,6 +308,16 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 									Verbs:     []string{"get"},
 								},
 								{
+									APIGroups: []string{"authentication.k8s.io"},
+									Resources: []string{"tokenreviews"},
+									Verbs:     []string{"create"},
+								},
+								{
+									APIGroups: []string{"authorization.k8s.io"},
+									Resources: []string{"subjectaccessreviews"},
+									Verbs:     []string{"create"},
+								},
+								{
 									APIGroups: []string{""},
 									Resources: []string{"persistentvolumeclaims"},
 									Verbs:     []string{"get", "list", "watch"},
