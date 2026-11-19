@@ -230,13 +230,20 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 							Rules: []rbacv1.PolicyRule{
 								{
 									APIGroups: []string{""},
-									Resources: []string{"configmaps"},
-									Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+									Resources: []string{"configmaps", "secrets"},
+									Verbs:     []string{"create"},
 								},
 								{
-									APIGroups: []string{""},
-									Resources: []string{"secrets"},
-									Verbs:     []string{"create", "get", "list", "watch"},
+									APIGroups:     []string{""},
+									Resources:     []string{"configmaps"},
+									ResourceNames: []string{"vm-file-restore-operator-ssh"},
+									Verbs:         []string{"delete", "get", "patch", "update"},
+								},
+								{
+									APIGroups:     []string{""},
+									Resources:     []string{"secrets"},
+									ResourceNames: []string{"vm-file-restore-operator-ssh"},
+									Verbs:         []string{"get"},
 								},
 								{
 									APIGroups: []string{"coordination.k8s.io"},
@@ -258,37 +265,27 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 								{
 									APIGroups: []string{"filerestore.kubevirt.io"},
 									Resources: []string{"filerestoreoperators"},
-									Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+									Verbs:     []string{"get", "list", "watch"},
 								},
 								{
 									APIGroups: []string{"filerestore.kubevirt.io"},
 									Resources: []string{"filerestoreoperators/status"},
-									Verbs:     []string{"get", "update", "patch"},
-								},
-								{
-									APIGroups: []string{"filerestore.kubevirt.io"},
-									Resources: []string{"filerestoreoperators/finalizers"},
-									Verbs:     []string{"update"},
+									Verbs:     []string{"get", "update"},
 								},
 								{
 									APIGroups: []string{"filerestore.kubevirt.io"},
 									Resources: []string{"virtualmachinefilerestores"},
-									Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+									Verbs:     []string{"get", "list", "watch", "update", "patch"},
 								},
 								{
 									APIGroups: []string{"filerestore.kubevirt.io"},
 									Resources: []string{"virtualmachinefilerestores/status"},
-									Verbs:     []string{"get", "update", "patch"},
-								},
-								{
-									APIGroups: []string{"filerestore.kubevirt.io"},
-									Resources: []string{"virtualmachinefilerestores/finalizers"},
-									Verbs:     []string{"update"},
+									Verbs:     []string{"get", "patch"},
 								},
 								{
 									APIGroups: []string{"kubevirt.io"},
 									Resources: []string{"virtualmachines"},
-									Verbs:     []string{"get", "list", "watch", "patch", "update"},
+									Verbs:     []string{"get", "list", "watch", "patch"},
 								},
 								{
 									APIGroups: []string{"kubevirt.io"},
@@ -298,7 +295,7 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 								{
 									APIGroups: []string{"cdi.kubevirt.io"},
 									Resources: []string{"datavolumes"},
-									Verbs:     []string{"create", "delete", "get", "list"},
+									Verbs:     []string{"create", "delete", "get"},
 								},
 								{
 									APIGroups: []string{"snapshot.storage.k8s.io"},
@@ -311,21 +308,6 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 									Verbs:     []string{"get"},
 								},
 								{
-									APIGroups: []string{""},
-									Resources: []string{"persistentvolumeclaims"},
-									Verbs:     []string{"get", "list", "watch", "create", "delete"},
-								},
-								{
-									APIGroups: []string{""},
-									Resources: []string{"pods"},
-									Verbs:     []string{"get", "list", "watch", "create", "delete"},
-								},
-								{
-									APIGroups: []string{""},
-									Resources: []string{"pods/exec"},
-									Verbs:     []string{"create"},
-								},
-								{
 									APIGroups: []string{"authentication.k8s.io"},
 									Resources: []string{"tokenreviews"},
 									Verbs:     []string{"create"},
@@ -334,6 +316,16 @@ func NewClusterServiceVersion(data *ClusterServiceVersionData) (*csvv1alpha1.Clu
 									APIGroups: []string{"authorization.k8s.io"},
 									Resources: []string{"subjectaccessreviews"},
 									Verbs:     []string{"create"},
+								},
+								{
+									APIGroups: []string{""},
+									Resources: []string{"persistentvolumeclaims"},
+									Verbs:     []string{"get", "list", "watch"},
+								},
+								{
+									APIGroups: []string{""},
+									Resources: []string{"pods"},
+									Verbs:     []string{"list", "watch"},
 								},
 							},
 						},
