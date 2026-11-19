@@ -17,9 +17,14 @@ limitations under the License.
 package operator
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/ghodss/yaml"
+	csvv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
 	rbacv1 "k8s.io/api/rbac/v1"
 
 	"github.com/stretchr/testify/assert"
@@ -205,6 +210,7 @@ func TestCSVRBACPermissions(t *testing.T) {
 
 	clusterPerms := csv.Spec.InstallStrategy.StrategySpec.ClusterPermissions
 	require.Len(t, clusterPerms, 1)
+	assert.Equal(t, permissions[0].ServiceAccountName, clusterPerms[0].ServiceAccountName)
 	assert.Equal(t, "vm-file-restore-operator-controller-manager", clusterPerms[0].ServiceAccountName)
 	require.Len(t, clusterPerms[0].Rules, 11)
 	for _, expected := range []policyRuleExpectation{
@@ -244,6 +250,26 @@ func TestCSVRBACPermissions(t *testing.T) {
 	}
 }
 
+func TestCSVRBACPermissionsMatchManifests(t *testing.T) {
+	data := &ClusterServiceVersionData{
+		CsvVersion:      "1.0.0",
+		Namespace:       "test-namespace",
+		OperatorImage:   "quay.io/kubevirt/vm-file-restore-operator:v1.0.0",
+		OperatorVersion: "1.0.0",
+	}
+
+	csv, err := NewClusterServiceVersion(data)
+	require.NoError(t, err)
+	require.NotNil(t, csv)
+
+	managerRole := readClusterRole(t, filepath.Join("..", "..", "..", "config", "rbac", "role.yaml"))
+	leaderElectionRole := readRole(t, filepath.Join("..", "..", "..", "config", "rbac", "leader_election_role.yaml"))
+
+	want := normalizePolicyRules(append(managerRole.Rules, leaderElectionRole.Rules...))
+	got := normalizePolicyRules(csvPolicyRules(csv))
+	assert.Equal(t, want, got)
+}
+
 type policyRuleExpectation struct {
 	apiGroup      string
 	resources     []string
@@ -262,4 +288,64 @@ func requirePolicyRule(t *testing.T, rules []rbacv1.PolicyRule, expected policyR
 		}
 	}
 	require.Failf(t, "missing policy rule", "expected=%+v", expected)
+}
+
+func readClusterRole(t *testing.T, path string) *rbacv1.ClusterRole {
+	t.Helper()
+
+	contents, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	role := &rbacv1.ClusterRole{}
+	require.NoError(t, yaml.Unmarshal(contents, role))
+	return role
+}
+
+func readRole(t *testing.T, path string) *rbacv1.Role {
+	t.Helper()
+
+	contents, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	role := &rbacv1.Role{}
+	require.NoError(t, yaml.Unmarshal(contents, role))
+	return role
+}
+
+func csvPolicyRules(csv *csvv1alpha1.ClusterServiceVersion) []rbacv1.PolicyRule {
+	strategy := csv.Spec.InstallStrategy.StrategySpec
+	rules := make([]rbacv1.PolicyRule, 0)
+	for _, permission := range strategy.Permissions {
+		rules = append(rules, permission.Rules...)
+	}
+	for _, permission := range strategy.ClusterPermissions {
+		rules = append(rules, permission.Rules...)
+	}
+	return rules
+}
+
+type normalizedPolicyRule struct {
+	apiGroups     string
+	resources     string
+	resourceNames string
+	verbs         string
+}
+
+func normalizePolicyRules(rules []rbacv1.PolicyRule) map[normalizedPolicyRule]struct{} {
+	normalized := make(map[normalizedPolicyRule]struct{}, len(rules))
+	for _, rule := range rules {
+		normalized[normalizedPolicyRule{
+			apiGroups:     sortedStrings(rule.APIGroups),
+			resources:     sortedStrings(rule.Resources),
+			resourceNames: sortedStrings(rule.ResourceNames),
+			verbs:         sortedStrings(rule.Verbs),
+		}] = struct{}{}
+	}
+	return normalized
+}
+
+func sortedStrings(values []string) string {
+	values = slices.Clone(values)
+	slices.Sort(values)
+	return strings.Join(values, ",")
 }
