@@ -28,12 +28,15 @@ import (
 
 const (
 	allowIngressToMetrics = "vm-file-restore-operator-allow-ingress-to-metrics"
+	allowEgressToSSH      = "vm-file-restore-operator-allow-egress-to-ssh"
 	metricsPort           = int32(8443)
+	sshPort               = int32(22)
 )
 
 func getNetworkPolicies(namespace string) []*networkv1.NetworkPolicy {
 	return []*networkv1.NetworkPolicy{
 		newIngressToMetricsNP(namespace),
+		newEgressToSSHNP(namespace),
 	}
 }
 
@@ -65,6 +68,29 @@ func newIngressToMetricsNP(namespace string) *networkv1.NetworkPolicy {
 					Ports: []networkv1.NetworkPolicyPort{
 						{
 							Port:     ptr.To(intstr.FromInt32(metricsPort)),
+							Protocol: ptr.To(corev1.ProtocolTCP),
+						},
+					},
+				},
+			},
+		},
+	)
+}
+
+func newEgressToSSHNP(namespace string) *networkv1.NetworkPolicy {
+	return newNetworkPolicy(
+		namespace,
+		allowEgressToSSH,
+		networkv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchLabels: map[string]string{common.ManagerPodLabelKey: common.ManagerPodLabelVal},
+			},
+			PolicyTypes: []networkv1.PolicyType{networkv1.PolicyTypeEgress},
+			Egress: []networkv1.NetworkPolicyEgressRule{
+				{
+					Ports: []networkv1.NetworkPolicyPort{
+						{
+							Port:     ptr.To(intstr.FromInt32(sshPort)),
 							Protocol: ptr.To(corev1.ProtocolTCP),
 						},
 					},
