@@ -33,8 +33,9 @@ const testNamespace = "test-namespace"
 func TestGetNetworkPolicies(t *testing.T) {
 	nps := getNetworkPolicies(testNamespace)
 
-	require.Len(t, nps, 1, "expected exactly 1 NetworkPolicy object")
+	require.Len(t, nps, 2, "expected exactly 2 NetworkPolicy objects")
 	assert.Equal(t, allowIngressToMetrics, nps[0].Name)
+	assert.Equal(t, allowEgressToSSH, nps[1].Name)
 }
 
 func TestNetworkPolicyMetadata(t *testing.T) {
@@ -63,6 +64,29 @@ func TestIngressToMetricsNetworkPolicy(t *testing.T) {
 
 	port := np.Spec.Ingress[0].Ports[0]
 	assert.Equal(t, intstr.FromInt32(metricsPort), *port.Port)
+	require.NotNil(t, port.Protocol)
+	assert.Equal(t, "TCP", string(*port.Protocol))
+}
+
+func TestEgressToSSHNetworkPolicy(t *testing.T) {
+	np := getNetworkPolicies(testNamespace)[1]
+
+	assert.Equal(t, allowEgressToSSH, np.Name)
+	assert.Equal(t, testNamespace, np.Namespace)
+	assert.Equal(t, "networking.k8s.io/v1", np.APIVersion)
+	assert.Equal(t, "NetworkPolicy", np.Kind)
+
+	selector := np.Spec.PodSelector.MatchLabels
+	require.Contains(t, selector, common.ManagerPodLabelKey)
+	assert.Equal(t, common.ManagerPodLabelVal, selector[common.ManagerPodLabelKey])
+
+	assert.Equal(t, []networkv1.PolicyType{networkv1.PolicyTypeEgress}, np.Spec.PolicyTypes)
+	require.Len(t, np.Spec.Egress, 1)
+	assert.Empty(t, np.Spec.Egress[0].To, "SSH egress should be unrestricted (no To selector)")
+	require.Len(t, np.Spec.Egress[0].Ports, 1)
+
+	port := np.Spec.Egress[0].Ports[0]
+	assert.Equal(t, intstr.FromInt32(sshPort), *port.Port)
 	require.NotNil(t, port.Protocol)
 	assert.Equal(t, "TCP", string(*port.Protocol))
 }
