@@ -33,11 +33,15 @@ rules:
   - ""
   resources:
   - persistentvolumeclaims
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - pods
   verbs:
-  - create
-  - delete
-  - get
   - list
   - watch
 - apiGroups:
@@ -56,8 +60,6 @@ rules:
   - create
   - delete
   - get
-  - list
-  - watch
 - apiGroups:
   - filerestore.kubevirt.io
   resources:
@@ -70,18 +72,14 @@ rules:
   - filerestore.kubevirt.io
   resources:
   - filerestoreoperators/status
-  - virtualmachinefilerestores/status
   verbs:
   - get
-  - patch
   - update
 - apiGroups:
   - filerestore.kubevirt.io
   resources:
   - virtualmachinefilerestores
   verbs:
-  - create
-  - delete
   - get
   - list
   - patch
@@ -90,9 +88,10 @@ rules:
 - apiGroups:
   - filerestore.kubevirt.io
   resources:
-  - virtualmachinefilerestores/finalizers
+  - virtualmachinefilerestores/status
   verbs:
-  - update
+  - get
+  - patch
 - apiGroups:
   - kubevirt.io
   resources:
@@ -109,7 +108,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - snapshot.storage.k8s.io

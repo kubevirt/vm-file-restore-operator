@@ -48,21 +48,20 @@ type VirtualMachineFileRestoreReconciler struct {
 	OperatorNamespace string
 }
 
-// +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=virtualmachinefilerestores,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=virtualmachinefilerestores/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=virtualmachinefilerestores/finalizers,verbs=update
-// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=virtualmachinefilerestores,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=filerestore.kubevirt.io,resources=virtualmachinefilerestores/status,verbs=get;patch
+// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachineinstances,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshots,verbs=get;list;watch
 // +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshotcontents,verbs=get
-// +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=datavolumes,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=cdi.kubevirt.io,resources=datavolumes,verbs=get;create;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=create
 // +kubebuilder:rbac:groups="",resources=secrets,resourceNames=vm-file-restore-operator-ssh,verbs=get
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create
 // +kubebuilder:rbac:groups="",resources=configmaps,resourceNames=vm-file-restore-operator-ssh,verbs=get;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.

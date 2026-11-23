@@ -17,8 +17,14 @@ limitations under the License.
 package operator
 
 import (
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
+	"github.com/ghodss/yaml"
+	csvv1alpha1 "github.com/operator-framework/api/pkg/operators/v1alpha1"
 	rbacv1 "k8s.io/api/rbac/v1"
 
 	"github.com/stretchr/testify/assert"
@@ -175,61 +181,174 @@ func TestCSVRBACPermissions(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, csv)
 
-	// Verify namespaced permissions include secrets
 	permissions := csv.Spec.InstallStrategy.StrategySpec.Permissions
 	require.Len(t, permissions, 1)
-
-	foundSecrets := false
-	for _, rule := range permissions[0].Rules {
-		for _, resource := range rule.Resources {
-			if resource == "secrets" {
-				foundSecrets = true
-				assert.Contains(t, rule.Verbs, "create")
-				assert.Contains(t, rule.Verbs, "get")
-			}
-		}
+	require.Len(t, permissions[0].Rules, 5)
+	for _, expected := range []policyRuleExpectation{
+		{apiGroup: "", resources: []string{"configmaps", "secrets"}, verbs: []string{"create"}},
+		{
+			apiGroup:      "",
+			resources:     []string{"configmaps"},
+			resourceNames: []string{"vm-file-restore-operator-ssh"},
+			verbs:         []string{"delete", "get", "patch", "update"},
+		},
+		{
+			apiGroup:      "",
+			resources:     []string{"secrets"},
+			resourceNames: []string{"vm-file-restore-operator-ssh"},
+			verbs:         []string{"get"},
+		},
+		{apiGroup: "", resources: []string{"events"}, verbs: []string{"create", "patch"}},
+		{
+			apiGroup:  "coordination.k8s.io",
+			resources: []string{"leases"},
+			verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+		},
+	} {
+		requirePolicyRule(t, permissions[0].Rules, expected)
 	}
-	assert.True(t, foundSecrets, "Secrets permission should be included")
 
-	// Verify cluster permissions include datavolumes and virtualmachineinstances
 	clusterPerms := csv.Spec.InstallStrategy.StrategySpec.ClusterPermissions
 	require.Len(t, clusterPerms, 1)
+	assert.Equal(t, permissions[0].ServiceAccountName, clusterPerms[0].ServiceAccountName)
 	assert.Equal(t, "vm-file-restore-operator-controller-manager", clusterPerms[0].ServiceAccountName)
-	assert.Contains(t, clusterPerms[0].Rules, rbacv1.PolicyRule{
-		APIGroups: []string{"snapshot.storage.k8s.io"},
-		Resources: []string{"volumesnapshotcontents"},
-		Verbs:     []string{"get"},
-	}, "Controller service account should be able to read cluster-scoped VolumeSnapshotContents")
+	require.Len(t, clusterPerms[0].Rules, 13)
+	for _, expected := range []policyRuleExpectation{
+		{
+			apiGroup:  "filerestore.kubevirt.io",
+			resources: []string{"filerestoreoperators"},
+			verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			apiGroup:  "filerestore.kubevirt.io",
+			resources: []string{"filerestoreoperators/status"},
+			verbs:     []string{"get", "update"},
+		},
+		{
+			apiGroup:  "filerestore.kubevirt.io",
+			resources: []string{"virtualmachinefilerestores"},
+			verbs:     []string{"get", "list", "watch", "update", "patch"},
+		},
+		{
+			apiGroup:  "filerestore.kubevirt.io",
+			resources: []string{"virtualmachinefilerestores/status"},
+			verbs:     []string{"get", "patch"},
+		},
+		{apiGroup: "kubevirt.io", resources: []string{"virtualmachines"}, verbs: []string{"get", "list", "watch", "patch"}},
+		{apiGroup: "kubevirt.io", resources: []string{"virtualmachineinstances"}, verbs: []string{"get", "list", "watch"}},
+		{apiGroup: "cdi.kubevirt.io", resources: []string{"datavolumes"}, verbs: []string{"create", "delete", "get"}},
+		{
+			apiGroup:  "snapshot.storage.k8s.io",
+			resources: []string{"volumesnapshots"},
+			verbs:     []string{"get", "list", "watch"},
+		},
+		{apiGroup: "snapshot.storage.k8s.io", resources: []string{"volumesnapshotcontents"}, verbs: []string{"get"}},
+		{apiGroup: "authentication.k8s.io", resources: []string{"tokenreviews"}, verbs: []string{"create"}},
+		{apiGroup: "authorization.k8s.io", resources: []string{"subjectaccessreviews"}, verbs: []string{"create"}},
+		{apiGroup: "", resources: []string{"persistentvolumeclaims"}, verbs: []string{"get", "list", "watch"}},
+		{apiGroup: "", resources: []string{"pods"}, verbs: []string{"list", "watch"}},
+	} {
+		requirePolicyRule(t, clusterPerms[0].Rules, expected)
+	}
+}
 
-	foundDataVolumes := false
-	foundVMInstances := false
-	foundVMsWithPatch := false
-
-	for _, rule := range clusterPerms[0].Rules {
-		for _, apiGroup := range rule.APIGroups {
-			if apiGroup == "cdi.kubevirt.io" {
-				for _, resource := range rule.Resources {
-					if resource == "datavolumes" {
-						foundDataVolumes = true
-					}
-				}
-			}
-			if apiGroup == "kubevirt.io" {
-				for _, resource := range rule.Resources {
-					if resource == "virtualmachineinstances" {
-						foundVMInstances = true
-					}
-					if resource == "virtualmachines" {
-						if assert.Contains(t, rule.Verbs, "patch") && assert.Contains(t, rule.Verbs, "update") {
-							foundVMsWithPatch = true
-						}
-					}
-				}
-			}
-		}
+func TestCSVRBACPermissionsMatchManifests(t *testing.T) {
+	data := &ClusterServiceVersionData{
+		CsvVersion:      "1.0.0",
+		Namespace:       "test-namespace",
+		OperatorImage:   "quay.io/kubevirt/vm-file-restore-operator:v1.0.0",
+		OperatorVersion: "1.0.0",
 	}
 
-	assert.True(t, foundDataVolumes, "DataVolumes permission should be included")
-	assert.True(t, foundVMInstances, "VirtualMachineInstances permission should be included")
-	assert.True(t, foundVMsWithPatch, "VirtualMachines should have patch/update verbs")
+	csv, err := NewClusterServiceVersion(data)
+	require.NoError(t, err)
+	require.NotNil(t, csv)
+
+	managerRole := readClusterRole(t, filepath.Join("..", "..", "..", "config", "rbac", "role.yaml"))
+	metricsAuthRole := readClusterRole(t, filepath.Join("..", "..", "..", "config", "rbac", "metrics_auth_role.yaml"))
+	leaderElectionRole := readRole(t, filepath.Join("..", "..", "..", "config", "rbac", "leader_election_role.yaml"))
+
+	want := normalizePolicyRules(append(append(managerRole.Rules, metricsAuthRole.Rules...), leaderElectionRole.Rules...))
+	got := normalizePolicyRules(csvPolicyRules(csv))
+	assert.Equal(t, want, got)
+}
+
+type policyRuleExpectation struct {
+	apiGroup      string
+	resources     []string
+	resourceNames []string
+	verbs         []string
+}
+
+func requirePolicyRule(t *testing.T, rules []rbacv1.PolicyRule, expected policyRuleExpectation) {
+	t.Helper()
+	for _, rule := range rules {
+		if slices.Equal(rule.APIGroups, []string{expected.apiGroup}) &&
+			slices.Equal(rule.Resources, expected.resources) &&
+			slices.Equal(rule.ResourceNames, expected.resourceNames) &&
+			slices.Equal(rule.Verbs, expected.verbs) {
+			return
+		}
+	}
+	require.Failf(t, "missing policy rule", "expected=%+v", expected)
+}
+
+func readClusterRole(t *testing.T, path string) *rbacv1.ClusterRole {
+	t.Helper()
+
+	contents, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	role := &rbacv1.ClusterRole{}
+	require.NoError(t, yaml.Unmarshal(contents, role))
+	return role
+}
+
+func readRole(t *testing.T, path string) *rbacv1.Role {
+	t.Helper()
+
+	contents, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	role := &rbacv1.Role{}
+	require.NoError(t, yaml.Unmarshal(contents, role))
+	return role
+}
+
+func csvPolicyRules(csv *csvv1alpha1.ClusterServiceVersion) []rbacv1.PolicyRule {
+	strategy := csv.Spec.InstallStrategy.StrategySpec
+	rules := make([]rbacv1.PolicyRule, 0)
+	for _, permission := range strategy.Permissions {
+		rules = append(rules, permission.Rules...)
+	}
+	for _, permission := range strategy.ClusterPermissions {
+		rules = append(rules, permission.Rules...)
+	}
+	return rules
+}
+
+type normalizedPolicyRule struct {
+	apiGroups     string
+	resources     string
+	resourceNames string
+	verbs         string
+}
+
+func normalizePolicyRules(rules []rbacv1.PolicyRule) map[normalizedPolicyRule]struct{} {
+	normalized := make(map[normalizedPolicyRule]struct{}, len(rules))
+	for _, rule := range rules {
+		normalized[normalizedPolicyRule{
+			apiGroups:     sortedStrings(rule.APIGroups),
+			resources:     sortedStrings(rule.Resources),
+			resourceNames: sortedStrings(rule.ResourceNames),
+			verbs:         sortedStrings(rule.Verbs),
+		}] = struct{}{}
+	}
+	return normalized
+}
+
+func sortedStrings(values []string) string {
+	values = slices.Clone(values)
+	slices.Sort(values)
+	return strings.Join(values, ",")
 }
