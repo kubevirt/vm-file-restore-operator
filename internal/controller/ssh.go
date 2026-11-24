@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -10,6 +11,29 @@ import (
 
 	"golang.org/x/crypto/ssh"
 )
+
+const (
+	// exitCodeHelperMissingLinux is the bash exit code for "command not found".
+	exitCodeHelperMissingLinux = 127
+	// exitCodeHelperMissingWindows is the cmd.exe exit code for "command not recognized".
+	exitCodeHelperMissingWindows = 9009
+)
+
+// exitStatuser is satisfied by *ssh.ExitError and test stubs.
+type exitStatuser interface {
+	ExitStatus() int
+}
+
+// IsHelperMissingError returns true if err indicates the guest restore helper
+// was not found (exit 127 on Linux/bash, 9009 on Windows/cmd.exe).
+func IsHelperMissingError(err error) bool {
+	var e exitStatuser
+	if errors.As(err, &e) {
+		s := e.ExitStatus()
+		return s == exitCodeHelperMissingLinux || s == exitCodeHelperMissingWindows
+	}
+	return false
+}
 
 // SSHClient wraps an SSH connection for executing remote commands.
 type SSHClient struct {
