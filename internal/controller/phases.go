@@ -706,8 +706,7 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 
 	// Build restore command
 	osType := DetectGuestOS(vmi)
-	volumeName := GetVolumeName(vmfr.Name)
-	command := BuildSSHCommand(osType, volumeName, vmfr.Status.MountPath, vmfr.Spec.SourcePath)
+	command := BuildSSHCommand(osType, string(vmfr.UID), vmfr.Status.MountPath, vmfr.Spec.SourcePath)
 
 	logger.Info("Executing restore command", "command", command)
 

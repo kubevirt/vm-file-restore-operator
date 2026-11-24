@@ -221,7 +221,9 @@ func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader
 		VolumeSource: volumeSource,
 	}
 
-	// Create disk with SCSI bus and serial number for guest detection
+	// Use the restore CR's own UID as the SCSI serial. It is a UUID (36 chars,
+	// within QEMU's SCSI serial limit), already in memory (no API call), and
+	// unique for the lifetime of the restore operation.
 	disk := v1.Disk{
 		Name: volumeName,
 		DiskDevice: v1.DiskDevice{
@@ -230,7 +232,7 @@ func HotplugVolume(ctx context.Context, c client.Client, apiReader client.Reader
 				ReadOnly: false,
 			},
 		},
-		Serial: volumeName,
+		Serial: string(vmfr.UID),
 	}
 
 	// Use Patch instead of Update to avoid conflicts from concurrent VM modifications

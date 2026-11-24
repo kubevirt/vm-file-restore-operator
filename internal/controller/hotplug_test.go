@@ -271,12 +271,16 @@ func TestHotplugVolume_PendingDataVolumeWithinTimeoutReturnsTransientError(t *te
 }
 
 // When the DataVolume already exists, hotplug must not re-read the snapshot resources.
+// The SCSI serial on the resulting disk must equal the restore CR's UID.
 func TestHotplugVolume_ExistingDataVolumeSkipsSnapshotRead(t *testing.T) {
+	const testCRUID = "aabbccdd-1122-3344-5566-aabbccddeeff"
 	snapshotGets := 0
 	existingDV := &cdiv1beta1.DataVolume{
 		ObjectMeta: metav1.ObjectMeta{Name: testRestoreVolumeName, Namespace: "default"},
 		Status:     cdiv1beta1.DataVolumeStatus{Phase: cdiv1beta1.Succeeded},
 	}
+	cr := snapshotRestoreCR()
+	cr.UID = testCRUID
 	vm := targetVM()
 	c := fake.NewClientBuilder().WithScheme(hotplugScheme(t)).
 		WithStatusSubresource(&cdiv1beta1.DataVolume{}).
@@ -291,7 +295,13 @@ func TestHotplugVolume_ExistingDataVolumeSkipsSnapshotRead(t *testing.T) {
 		}).
 		Build()
 
-	err := HotplugVolume(context.Background(), c, c, snapshotRestoreCR(), vm)
+	err := HotplugVolume(context.Background(), c, c, cr, vm)
 	require.NoError(t, err)
 	assert.Equal(t, 0, snapshotGets, "should not read the VolumeSnapshot when the DataVolume already exists")
+
+	// Verify the SCSI serial on the resulting disk equals the restore CR UID.
+	updatedVM := &v1.VirtualMachine{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{Name: "myvm", Namespace: "default"}, updatedVM))
+	require.Len(t, updatedVM.Spec.Template.Spec.Domain.Devices.Disks, 1)
+	assert.Equal(t, testCRUID, updatedVM.Spec.Template.Spec.Domain.Devices.Disks[0].Serial)
 }
