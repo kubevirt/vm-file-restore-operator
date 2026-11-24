@@ -1,10 +1,35 @@
 package controller
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
+
+type stubExitError struct{ code int }
+
+func (e *stubExitError) ExitStatus() int { return e.code }
+func (e *stubExitError) Error() string   { return fmt.Sprintf("Process exited with status %d", e.code) }
+
+func TestIsHelperMissingError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"linux exit 127", &stubExitError{exitCodeHelperMissingLinux}, true},
+		{"windows exit 9009", &stubExitError{exitCodeHelperMissingWindows}, true},
+		{"other non-zero exit", &stubExitError{1}, false},
+		{"generic error", fmt.Errorf("connection refused"), false},
+		{"nil", nil, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, IsHelperMissingError(tc.err))
+		})
+	}
+}
 
 func TestBuildSSHCommand_LinuxAutomatic(t *testing.T) {
 	command := BuildSSHCommand("linux", "test-restore", "/backup", "/home/user/data")

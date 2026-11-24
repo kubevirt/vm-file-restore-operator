@@ -722,6 +722,9 @@ func handleRestoringPhase(ctx context.Context, r *VirtualMachineFileRestoreRecon
 			return failRestore(ctx, r, vmfr, fmt.Errorf("restore command timeout"), "restore command timed out after 10 minutes")
 		}
 		detail := fmt.Sprintf("restore command failed: %s\nstdout: %s\nstderr: %s", err.Error(), TruncateOutput(stdout, 50), TruncateOutput(stderr, 50))
+		if IsHelperMissingError(err) {
+			detail = "Guest helper not found. Ensure the guest VM has been configured for file restore operations.\n\nRaw error: " + detail
+		}
 		return failRestore(ctx, r, vmfr, err, detail)
 	}
 
