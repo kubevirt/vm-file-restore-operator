@@ -262,7 +262,7 @@ func setCondition(conditions *[]metav1.Condition, newCondition metav1.Condition)
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *VirtualMachineFileRestoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.Recorder = mgr.GetEventRecorderFor("virtualmachinefilerestore-controller")
+	r.Recorder = mgr.GetEventRecorderFor("virtualmachinefilerestore-controller") //nolint:staticcheck
 
 	// Ensure the uncached reader is always set. getSSHPrivateKey relies on it and must
 	// never fall back to the cached client, which would start an all-namespaces Secret
