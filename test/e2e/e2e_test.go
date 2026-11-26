@@ -819,6 +819,32 @@ sync
 				By("verifying every expected persisted phase was observed in order")
 				assertExpectedRestorePhases(watcher.snapshot())
 			})
+
+			It("should succeed when the restore CR name exceeds 36 characters", func() {
+				// Regression test: the old serial was crName+"-restore" which could exceed
+				// QEMU's 36-char SCSI serial limit. The CR UID is always a 36-char UUID.
+				const (
+					restoreName = "long-cr-name-restore-regression-test-01" // 39 chars; +"-restore" = 48
+					snapName    = "long-cr-name-snap"
+					dataPath    = "/home/donald/long-name-data"
+					dataFile    = dataPath + "/content.txt"
+				)
+				env := sharedEnv
+				DeferCleanup(func() {
+					deleteFileRestoreIfExists(env, restoreName)
+					deleteSnapshotIfExists(env, snapName)
+				})
+
+				By("preparing the backup snapshot")
+				prepareBootDiskRestoreSnapshot(env, snapName, dataPath, dataFile, "long-cr-name-content")
+
+				By("creating the restore CR with a name that would have exceeded the old serial limit")
+				err := createFileRestoreCR(env.CRClient, env.Namespace, restoreName, snapName, dataFile)
+				Expect(err).NotTo(HaveOccurred())
+
+				By("verifying the restore succeeds")
+				waitForRestorePhase(env.CRClient, env.Namespace, restoreName, filerestorev1alpha1.RestorePhaseSucceeded)
+			})
 		}) // end Context("standard restore operations") — shared VM is torn down here before special-VM tests
 
 		// When a snapshot of an LVM disk is hotplugged into the same VM, the snapshot

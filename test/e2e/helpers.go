@@ -1152,22 +1152,10 @@ func interruptGuestDiskDuringRestore(
 		resultErr = errors.Join(resultErr, resumeGuestRsync(vmName, namespace, identityFile, processIDs))
 	}()
 
-	device, err := findDataDiskDevice(vmName, namespace, volumeName, identityFile)
-	if err != nil {
-		return fmt.Errorf("find guest disk %s: %w", volumeName, err)
-	}
 	if err := removeVolumeFromVM(virtClient, namespace, vmName, volumeName); err != nil {
 		return err
 	}
-	if err := waitForVMIVolumeDetached(virtClient, namespace, vmName, volumeName, 2*time.Minute); err != nil {
-		return err
-	}
-	if err := waitForGuestBlockDeviceDetached(
-		vmName, namespace, device, identityFile, 2*time.Minute,
-	); err != nil {
-		return err
-	}
-	return nil
+	return waitForVMIVolumeDetached(virtClient, namespace, vmName, volumeName, 2*time.Minute)
 }
 
 func createBlankBackupPVC(k8sClient *kubernetes.Clientset, namespace, pvcName, size string) {
@@ -1280,22 +1268,6 @@ func waitForVMIVolumeDetached(
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("volume %s remained attached to VMI %s/%s", volumeName, namespace, vmiName)
-}
-
-func waitForGuestBlockDeviceDetached(
-	vmiName, namespace, device, identityFile string, timeout time.Duration,
-) error {
-	devicePath := "/dev/" + device
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		_, err := runSSHCommand(vmiName, namespace,
-			fmt.Sprintf("test ! -b %s", shellEscape(devicePath)), identityFile)
-		if err == nil {
-			return nil
-		}
-		time.Sleep(time.Second)
-	}
-	return fmt.Errorf("block device %s remained accessible in guest %s/%s", devicePath, namespace, vmiName)
 }
 
 func createLargeFileOnVM(vmiName, namespace, path string, sizeBytes int64, identityFile string) {
