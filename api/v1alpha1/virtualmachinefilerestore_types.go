@@ -175,7 +175,3 @@ type VirtualMachineFileRestoreList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []VirtualMachineFileRestore `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&VirtualMachineFileRestore{}, &VirtualMachineFileRestoreList{})
-}
